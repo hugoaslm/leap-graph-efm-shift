@@ -1,0 +1,27 @@
+# Generated / output
+data/
+checkpoints/
+results/
+figures/
+saved_models/
+wandb/
+lightning_logs/
+saved_forecasts/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Archives
+*.zip
+*.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# The neural-lam repo is cloned at runtime — not committed
+neural-lam-prob-model/
+neural-lam-main/
