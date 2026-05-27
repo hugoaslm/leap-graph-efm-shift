@@ -9,7 +9,7 @@ REQUIRED_VARS = [
     "geopotential_at_surface", "land_sea_mask",
 ]
 
-WB2_64x32_SOURCE = "gs://weatherbench2/datasets/era5/1959-2022-6h-64x32.zarr/"
+WB2_64x32_SOURCE = "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr"
 
 
 def download_with_gsutil(source, dest):
