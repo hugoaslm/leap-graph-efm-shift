@@ -32,22 +32,29 @@ def download_with_xarray(source, dest, time_start=None, time_end=None, colab_aut
             if token is None:
                 raise
             print(f"Anonymous access failed, trying default credentials...")
-    available = [v for v in REQUIRED_VARS if v in ds.data_vars]
-    missing = set(REQUIRED_VARS) - set(available)
+    missing = set(REQUIRED_VARS) - set(ds.data_vars)
     if missing:
-        print(f"Variables not found: {missing}")
-    ds = ds[available]
+        raise RuntimeError(
+            "WeatherBench source is missing required variables: "
+            f"{sorted(missing)}. Available variables: {list(ds.data_vars)}"
+        )
+    ds = ds[REQUIRED_VARS]
     if "level" in ds.dims:
         ds = ds.sel(level=[500, 850], method="nearest")
     if time_start is not None or time_end is not None:
         ds = ds.sel(time=slice(time_start, time_end))
+
+    # Neural-LAM flattens arrays with longitude before latitude.
+    ds = ds.transpose(
+        "time", "longitude", "latitude", "level", missing_dims="ignore"
+    )
 
     encoding = {}
     for var in ds.data_vars:
         shape = ds[var].shape
         if len(shape) >= 3:
             encoding[var] = {"chunks": (1,) + tuple(-1 for _ in shape[1:])}
-    ds.to_zarr(dest, mode="w", encoding=encoding)
+    ds.to_zarr(dest, mode="w", encoding=encoding, consolidated=True)
     print(f"Saved {dest} ({ds.nbytes/1e9:.1f} GB)")
 
 
@@ -70,7 +77,7 @@ def main():
         download_with_xarray(args.source, args.output, args.time_start, args.time_end,
                              colab_auth=args.colab_auth)
 
-    ds = xr.open_zarr(args.output)
+    ds = xr.open_zarr(args.output, consolidated=True)
     print(f"Time: {ds.time.values[0]} .. {ds.time.values[-1]}")
     print(f"Variables: {list(ds.data_vars)}")
     print(f"Grid: {ds.sizes.get('longitude','?')} x {ds.sizes.get('latitude','?')}")
