@@ -1,71 +1,32 @@
 #!/usr/bin/env python3
-"""
-Ensemble evaluation + post-hoc calibration for the Graph-EFM temporal-shift
-experiment.
-
-Evaluates a trained checkpoint on validation, ID, and OOD splits with
-season-balanced sampling, computes per-variable per-lead metrics (RMSE, bias,
-CRPS, spread-skill ratio, interval coverage, rank histograms), fits a
-post-hoc spread-scaling calibration on the validation set, and applies it
-to ID/OOD forecasts.
-
-Also computes a persistence baseline and t2m anomaly characterization.
-
-Usage:
-    python scripts/evaluate_shift.py \\
-        --config configs/wb2_shift_64x32_graph_efm.yaml \\
-        --checkpoint checkpoints/best_phase_b.ckpt \\
-        --ensemble_size 8 \\
-        --output results/
-"""
-from __future__ import annotations
-
-import json
-import os
-import sys
+import json, os, sys, csv
 from argparse import ArgumentParser
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
 import yaml
 from tqdm import tqdm
 
-# Ensure neural-lam-prob-model is on path
-REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "neural-lam-prob-model")
-)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "neural-lam-prob-model"))
 sys.path.insert(0, REPO_ROOT)
 
 from neural_lam import constants, metrics as nl_metrics
 from neural_lam.era5_dataset import ERA5Dataset
 from neural_lam.models.graph_efm import GraphEFM
 
-# ---------------------------------------------------------------------------
-# Types
-# ---------------------------------------------------------------------------
 
 @dataclass
 class EvalResult:
-    """Holds metrics for one (split, calibration) combination."""
     split: str
-    calibration: str  # "raw" or "calibrated"
-    # Per variable, per lead: arrays of shape (n_samples,)
-    rmse: Dict[str, Dict[int, np.ndarray]] = field(default_factory=dict)
-    bias: Dict[str, Dict[int, np.ndarray]] = field(default_factory=dict)
-    crps: Dict[str, Dict[int, np.ndarray]] = field(default_factory=dict)
-    spread_skill: Dict[str, Dict[int, np.ndarray]] = field(default_factory=dict)
-    coverage: Dict[str, Dict[int, Dict[str, np.ndarray]]] = field(
-        default_factory=dict
-    )  # coverage[pct][var][lead] = array
-    rank_hist: Dict[str, Dict[int, np.ndarray]] = field(
-        default_factory=dict
-    )  # rank_hist[var][lead] = (n_bins,) array
-
-    # Raw ensemble and target arrays for calibration
-    # Shape: (n_samples, ensemble_size, pred_steps, N_grid, d_state)
+    calibration: str
+    rmse: dict = field(default_factory=dict)
+    bias: dict = field(default_factory=dict)
+    crps: dict = field(default_factory=dict)
+    spread_skill: dict = field(default_factory=dict)
+    coverage: dict = field(default_factory=dict)
+    rank_hist: dict = field(default_factory=dict)
     pred: np.ndarray | None = None
     target: np.ndarray | None = None
 
@@ -623,32 +584,20 @@ def main():
         init_times = make_eval_sampler(cfg, split_key, seed=seed,
                                        dates_per_month=dates_per_month)
         all_init_times[split_key] = init_times
-        print(f"Split {split_key}: {len(init_times)} init times")
+        print(f"{split_key}: {len(init_times)} init times")
 
-    # ---- 2. Run ensemble forecasts ----
-    predictions = {}
-    targets = {}
+    predictions, targets = {}, {}
     for split_key in splits:
-        print(f"\n=== Evaluating {split_key} ===")
-        dataset = ERA5Dataset(
-            cfg["dataset"]["name"],
-            pred_length=eval_leads,
-            split=split_key,
-            standardize=True,
-        )
+        dataset = ERA5Dataset(cfg["dataset"]["name"], pred_length=eval_leads,
+                              split=split_key, standardize=True)
         pred_arr, targ_arr = run_ensemble_forecast(
             model, dataset, all_init_times[split_key],
-            ensemble_size, eval_leads, device, mask,
-        )
+            ensemble_size, eval_leads, device, mask)
         predictions[split_key] = pred_arr
         targets[split_key] = targ_arr
-        print(f"  Predictions: {pred_arr.shape}")
-        print(f"  Targets:     {targ_arr.shape}")
+        print(f"  {split_key} pred: {pred_arr.shape}, target: {targ_arr.shape}")
 
-    # ---- 3. Compute raw metrics ----
-    print("\n=== Computing metrics ===")
-    all_results = {}  # key: (split, calib) -> metrics dict
-
+    all_results = {}
     for split_key in splits:
         pred_t = torch.tensor(predictions[split_key], dtype=torch.float32)
         targ_t = torch.tensor(targets[split_key], dtype=torch.float32)
@@ -657,8 +606,7 @@ def main():
         )
         all_results[(split_key, "raw")] = metrics
 
-    # ---- 4. Fit calibration on validation ----
-    print("\n=== Fitting calibration (validation) ===")
+    print("Fitting calibration on validation set...")
     multipliers = fit_calibration(
         predictions["val"], targets["val"],
         var_names, lead_hours, grid_weights, cal_grid, mask,
@@ -676,71 +624,47 @@ def main():
               "w") as fh:
         json.dump(mult_save, fh, indent=2)
 
-    # ---- 5. Apply calibration and recompute ----
-    print("\n=== Applying calibration ===")
+    # Apply calibration
     for split_key in ["id", "ood"]:
         cal_pred = apply_calibration(
-            predictions[split_key], multipliers, var_names, lead_hours,
-        )
+            predictions[split_key], multipliers, var_names, lead_hours)
         pred_t = torch.tensor(cal_pred, dtype=torch.float32)
         targ_t = torch.tensor(targets[split_key], dtype=torch.float32)
         metrics = compute_all_metrics(
-            pred_t, targ_t, grid_weights, var_names, lead_hours, mask,
-        )
+            pred_t, targ_t, grid_weights, var_names, lead_hours, mask)
         all_results[(split_key, "calibrated")] = metrics
 
-    # ---- 6. Compute persistence baseline ----
-    print("\n=== Persistence baseline ===")
-    # Get init states for persistence (the latest state = t=0)
-    # The dataset gives init_states[1] as the latest state
-    # We'll reload each init time to get the init state
+    # Persistence baseline
     pers_rmse = defaultdict(dict)
     for split_key in ["id", "ood"]:
-        dataset = ERA5Dataset(
-            cfg["dataset"]["name"],
-            pred_length=eval_leads,
-            split=split_key,
-            standardize=True,
-        )
-        # Collect all init states
-        init_latest = []
-        targ_all = []
+        dataset = ERA5Dataset(cfg["dataset"]["name"], pred_length=eval_leads,
+                              split=split_key, standardize=True)
+        init_latest, targ_all = [], []
         for year, month, day, hour in all_init_times[split_key]:
             idx = idx_from_init_time(dataset, year, month, day, hour)
             if idx is None:
                 continue
             init_states, target_states, _ = dataset[idx]
-            # init_states: (2, N, D), latest = init_states[1]
             init_latest.append(init_states[1].cpu().numpy())
             targ_all.append(target_states.cpu().numpy())
+        if init_latest:
+            init_arr = np.stack(init_latest, axis=0)
+            targ_arr_full = np.stack(targ_all, axis=0)
+            pers_metrics = compute_persistence_rmse(
+                targ_arr_full, init_arr, grid_weights, var_names, lead_hours, mask)
+            for vname in var_names:
+                for lh in lead_hours:
+                    pers_rmse[split_key][(vname, lh)] = pers_metrics[vname][lh]
 
-        if not init_latest:
-            continue
-
-        init_arr = np.stack(init_latest, axis=0)  # (S, N, D)
-        targ_arr_full = np.stack(targ_all, axis=0)  # (S, T, N, D)
-
-        pers_metrics = compute_persistence_rmse(
-            targ_arr_full, init_arr, grid_weights,
-            var_names, lead_hours, mask,
-        )
-        for vname in var_names:
-            for lh in lead_hours:
-                pers_rmse[split_key][(vname, lh)] = pers_metrics[vname][lh]
-
-    # ---- 7. Compute t2m anomalies ----
-    print("\n=== t2m anomalies ===")
+    # t2m anomalies
     anomalies = {}
     for split_key in splits:
-        anom = compute_t2m_anomalies(
-            cfg, all_init_times[split_key], split_key,
-        )
+        anom = compute_t2m_anomalies(cfg, all_init_times[split_key], split_key)
         anomalies[split_key] = anom
         if anom:
-            print(f"  {split_key}: mean={anom['mean']:.3f} K")
+            print(f"  {split_key} t2m anomaly: {anom['mean']:.3f} K")
 
-    # ---- 8. Bootstrap CIs for OOD-ID differences ----
-    print("\n=== Bootstrap CIs ===")
+    # Bootstrap CIs
     bootstrap_results = []
     for calib in ["raw", "calibrated"]:
         for metric_name in ["rmse", "crps"]:
@@ -770,10 +694,7 @@ def main():
                         "ci_upper": hi,
                     })
 
-    # ---- 9. Export all results ----
-    print("\n=== Exporting results ===")
-
-    # 9a. Metric table
+    # Export
     rows = []
     for (split_key, calib), metrics in all_results.items():
         for metric_name in ["rmse", "bias", "crps", "spread_skill"]:
@@ -814,67 +735,46 @@ def main():
                             "std": float(np.std(vals)),
                         })
 
-    import csv
     if rows:
-        with open(os.path.join(args.output, "metrics.csv"), "w",
-                  newline="") as fh:
+        with open(os.path.join(args.output, "metrics.csv"), "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=rows[0].keys())
             writer.writeheader()
             writer.writerows(rows)
-        print(f"  Wrote {len(rows)} metric rows to metrics.csv")
 
-    # 9b. Bootstrap results
     if bootstrap_results:
-        with open(os.path.join(args.output, "bootstrap_ci.csv"), "w",
-                  newline="") as fh:
-            writer = csv.DictWriter(
-                fh, fieldnames=bootstrap_results[0].keys(),
-            )
+        with open(os.path.join(args.output, "bootstrap_ci.csv"), "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=bootstrap_results[0].keys())
             writer.writeheader()
             writer.writerows(bootstrap_results)
-        print(f"  Wrote {len(bootstrap_results)} bootstrap rows")
 
-    # 9c. Anomalies
-    anom_export = {
-        k: {"mean": v.get("mean"), "std": v.get("std")}
-        for k, v in anomalies.items()
-    }
+    anom_export = {k: {"mean": v.get("mean"), "std": v.get("std")}
+                   for k, v in anomalies.items()}
     with open(os.path.join(args.output, "t2m_anomalies.json"), "w") as fh:
         json.dump(anom_export, fh, indent=2)
 
-    # 9d. Persistence baseline
     pers_rows = []
     for split_key in ["id", "ood"]:
         for (vname, lh), rmse_vals in pers_rmse[split_key].items():
-            pers_rows.append({
-                "split": split_key,
-                "variable": vname,
-                "lead_hours": lh,
-                "rmse_mean": float(np.mean(rmse_vals)),
-            })
+            pers_rows.append({"split": split_key, "variable": vname,
+                              "lead_hours": lh, "rmse_mean": float(np.mean(rmse_vals))})
     if pers_rows:
-        with open(os.path.join(args.output, "persistence_rmse.csv"), "w",
-                  newline="") as fh:
+        with open(os.path.join(args.output, "persistence_rmse.csv"), "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=pers_rows[0].keys())
             writer.writeheader()
             writer.writerows(pers_rows)
 
-    # 9e. Rank histograms (save as numpy for plotting)
     for (split_key, calib), metrics in all_results.items():
         if "rank_hist" not in metrics:
             continue
         rh_dict = {}
         for vname in var_names:
-            rh_dict[vname] = {}
-            for lh in lead_hours:
-                rh = metrics["rank_hist"][vname].get(lh)
-                if rh is not None:
-                    rh_dict[vname][str(lh)] = rh.tolist()
-        fname = f"rank_hist_{split_key}_{calib}.json"
-        with open(os.path.join(args.output, fname), "w") as fh:
+            rh_dict[vname] = {str(lh): metrics["rank_hist"][vname].get(lh).tolist()
+                              for lh in lead_hours
+                              if metrics["rank_hist"][vname].get(lh) is not None}
+        with open(os.path.join(args.output, f"rank_hist_{split_key}_{calib}.json"), "w") as fh:
             json.dump(rh_dict, fh, indent=2)
 
-    print("\n✓ Evaluation complete.")
+    print("Evaluation done.")
 
 
 if __name__ == "__main__":

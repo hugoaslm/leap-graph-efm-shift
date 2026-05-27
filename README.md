@@ -16,33 +16,18 @@ warmer test years.
 The notebook clones this repo and neural-lam from GitHub. Data, checkpoints,
 and outputs are stored on Google Drive at `MyDrive/leap_project/`.
 
-## What's in this repo
+## Repository
 
-```
-├── .gitignore
-├── README.md
-├── configs/
-│   └── wb2_shift_64x32_graph_efm.yaml   # Experiment configuration
-├── scripts/
-│   ├── download_wb2_data.py              # WB2 data download (Colab)
-│   ├── prepare_wb2_subset.py             # Preprocessing orchestrator
-│   ├── train_shift_model.py              # Two-phase training wrapper
-│   ├── evaluate_shift.py                 # Ensemble eval + calibration
-│   └── plot_shift_results.py             # 5 publication figures
-├── notebooks/
-│   └── graph_efm_temporal_shift_colab.ipynb
-└── neural-lam-patches/                   # Modified files applied over
-    ├── train_model.py                    #   cloned neural-lam at runtime
-    ├── create_global_forcing.py
-    ├── create_parameter_weights.py
-    └── neural_lam/
-        ├── constants.py                  # Config-driven dynamic dimensions
-        ├── era5_dataset.py               # Custom splits + variable selection
-        ├── forecast_to_xarr.py           # Config-mode guards
-        └── metrics.py                    # Ensemble evaluation helpers
-```
+- `configs/wb2_shift_64x32_graph_efm.yaml` — experiment configuration (grid, variables, splits, model hyperparameters)
+- `scripts/download_wb2_data.py` — WeatherBench 2 data download
+- `scripts/prepare_wb2_subset.py` — preprocessing (forcing, grid features, mesh, statistics)
+- `scripts/train_shift_model.py` — two-phase training wrapper
+- `scripts/evaluate_shift.py` — ensemble evaluation with post-hoc calibration
+- `scripts/plot_shift_results.py` — generates the five publication figures
+- `notebooks/graph_efm_temporal_shift_colab.ipynb` — Colab notebook that runs the full pipeline
+- `neural-lam-patches/` — modifications applied over the upstream neural-lam `prob_model_global` branch at runtime
 
-## Research Question
+## Research question
 
 > Does a small probabilistic Graph-EFM model become less well calibrated on
 > later ERA5 years than on earlier held-out years, after calibration has been
@@ -55,9 +40,8 @@ and outputs are stored on Google Drive at `MyDrive/leap_project/`.
 - **Calibration:** Validation 2006–2010, tested on ID 2011–2015 and OOD
   2016–2022
 
-## Credits
+## References
 
-- **Graph-EFM:** Oskarsson et al., "Probabilistic Weather Forecasting with
-  Hierarchical Graph Neural Networks", NeurIPS 2024
-- **Neural-LAM:** https://github.com/mllam/neural-lam
-- **WeatherBench 2:** https://weatherbench2.readthedocs.io/
+- Oskarsson et al., "Probabilistic Weather Forecasting with Hierarchical Graph Neural Networks", NeurIPS 2024.
+- Neural-LAM repository: https://github.com/mllam/neural-lam
+- WeatherBench 2: https://weatherbench2.readthedocs.io/

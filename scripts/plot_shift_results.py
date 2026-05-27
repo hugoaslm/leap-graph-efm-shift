@@ -1,116 +1,41 @@
 #!/usr/bin/env python3
-"""
-Generate figures for the Graph-EFM temporal-shift experiment.
-
-Reads evaluation metrics from results/ and produces the 5 agreed figures:
-  1. Split timeline + t2m anomaly comparison
-  2. Ensemble-mean RMSE vs lead time (ID vs OOD + persistence)
-  3. Raw vs calibrated CRPS vs lead time (ID vs OOD)
-  4. Calibrated spread-skill ratio + interval coverage vs lead time
-  5. Calibrated t2m rank histograms at 72 h
-
-Usage:
-    python scripts/plot_shift_results.py \\
-        --config configs/wb2_shift_64x32_graph_efm.yaml \\
-        --metrics results/ \\
-        --output figures/
-"""
-from __future__ import annotations
-
-import json
-import os
+import json, os, csv
 from argparse import ArgumentParser
-from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-# ---------------------------------------------------------------------------
-# Plot style
-# ---------------------------------------------------------------------------
-
 COLORS = {
-    "raw_id": "#2166ac",
-    "raw_ood": "#b2182b",
-    "cal_id": "#4393c3",
-    "cal_ood": "#d6604d",
+    "raw_id": "#2166ac", "raw_ood": "#b2182b",
+    "cal_id": "#4393c3", "cal_ood": "#d6604d",
     "persistence": "#666666",
 }
-
 LINE_STYLES = {
-    "raw_id": "-",
-    "raw_ood": "-",
-    "cal_id": "--",
-    "cal_ood": "--",
+    "raw_id": "-", "raw_ood": "-",
+    "cal_id": "--", "cal_ood": "--",
     "persistence": ":",
 }
-
-VARIABLE_LABELS = {
-    "z500": "Z500",
-    "t850": "T850",
-    "t2m": "T2M",
-}
-
-VARIABLE_UNITS = {
-    "z500": "m²/s²",
-    "t850": "K",
-    "t2m": "K",
-}
+VAR_LABELS = {"z500": "Z500", "t850": "T850", "t2m": "T2M"}
+VAR_UNITS = {"z500": "m²/s²", "t850": "K", "t2m": "K"}
 
 
-def load_metrics(metrics_dir: str) -> list[dict]:
-    """Load metrics.csv as list of dicts."""
-    import csv
-    path = os.path.join(metrics_dir, "metrics.csv")
+def _load_csv(path):
     if not os.path.exists(path):
-        print(f"Warning: {path} not found")
         return []
-    with open(path, "r") as fh:
+    with open(path) as fh:
         return list(csv.DictReader(fh))
 
 
-def load_bootstrap(metrics_dir: str) -> list[dict]:
-    """Load bootstrap_ci.csv."""
-    import csv
-    path = os.path.join(metrics_dir, "bootstrap_ci.csv")
-    if not os.path.exists(path):
-        return []
-    with open(path, "r") as fh:
-        return list(csv.DictReader(fh))
-
-
-def load_persistence(metrics_dir: str) -> list[dict]:
-    """Load persistence_rmse.csv."""
-    import csv
-    path = os.path.join(metrics_dir, "persistence_rmse.csv")
-    if not os.path.exists(path):
-        return []
-    with open(path, "r") as fh:
-        return list(csv.DictReader(fh))
-
-
-def load_anomalies(metrics_dir: str) -> dict:
-    """Load t2m_anomalies.json."""
-    path = os.path.join(metrics_dir, "t2m_anomalies.json")
+def _load_json(path):
     if not os.path.exists(path):
         return {}
-    with open(path, "r") as fh:
+    with open(path) as fh:
         return json.load(fh)
 
 
-def load_rank_histograms(metrics_dir: str, split: str, calib: str) -> dict:
-    """Load rank histogram JSON."""
-    path = os.path.join(metrics_dir, f"rank_hist_{split}_{calib}.json")
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r") as fh:
-        return json.load(fh)
-
-
-def get_metric_values(rows: list[dict], split: str, calib: str, var: str,
-                      metric: str) -> dict:
-    """Return {lead_hours: mean_value} for a given metric slice."""
+def _metric_vals(rows, split, calib, var, metric):
+    """Return {lead_hours: mean} for a given slice."""
     result = {}
     for r in rows:
         if (r["split"] == split and r["calibration"] == calib
@@ -119,19 +44,15 @@ def get_metric_values(rows: list[dict], split: str, calib: str, var: str,
     return result
 
 
-def get_bootstrap_ci(bs_rows: list[dict], calib: str, metric: str,
-                     var: str) -> dict:
-    """Return {lead_hours: (est, lo, hi)}."""
+def _bootstrap_ci(bs_rows, calib, metric, var):
+    """Return {lead_hours: (estimate, lo, hi)}."""
     key = f"{calib}_{metric}"
     result = {}
     for r in bs_rows:
-        if (r["metric"] == key and r["variable"] == var):
+        if r["metric"] == key and r["variable"] == var:
             lh = int(float(r["lead_hours"]))
-            result[lh] = (
-                float(r["ood_minus_id_estimate"]),
-                float(r["ci_lower"]),
-                float(r["ci_upper"]),
-            )
+            result[lh] = (float(r["ood_minus_id_estimate"]),
+                          float(r["ci_lower"]), float(r["ci_upper"]))
     return result
 
 
@@ -209,8 +130,8 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
         ax = axes[0, vi]
 
         # ID raw
-        id_vals = get_metric_values(rows, "id", "raw", vname, "rmse")
-        ood_vals = get_metric_values(rows, "ood", "raw", vname, "rmse")
+        id_vals = _metric_vals(rows, "id", "raw", vname, "rmse")
+        ood_vals = _metric_vals(rows, "ood", "raw", vname, "rmse")
         # Persistence
         pers_id = {}
         pers_ood = {}
@@ -239,7 +160,7 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
                     marker="x", label="Persistence")
 
         # Bootstrap CI bands
-        ci = get_bootstrap_ci(bs_rows, "raw", "rmse", vname)
+        ci = _bootstrap_ci(bs_rows, "raw", "rmse", vname)
         if ci:
             ci_leads = sorted(ci.keys())
             id_arr = np.array([id_vals[l] for l in ci_leads])
@@ -252,8 +173,8 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
             )
 
         ax.set_xlabel("Lead time (h)")
-        ax.set_ylabel(f"RMSE ({VARIABLE_UNITS.get(vname, '')})")
-        ax.set_title(VARIABLE_LABELS.get(vname, vname))
+        ax.set_ylabel(f"RMSE ({VAR_UNITS.get(vname, '')})")
+        ax.set_title(VAR_LABELS.get(vname, vname))
         ax.legend(fontsize=7)
         ax.grid(True, alpha=0.3)
 
@@ -284,7 +205,7 @@ def fig3_crps(rows: list[dict], bs_rows: list[dict],
             ("calibrated", "id", "cal_id"),
             ("calibrated", "ood", "cal_ood"),
         ]:
-            vals = get_metric_values(rows, split, cal, vname, "crps")
+            vals = _metric_vals(rows, split, cal, vname, "crps")
             if not vals:
                 continue
             leads = sorted(vals.keys())
@@ -294,8 +215,8 @@ def fig3_crps(rows: list[dict], bs_rows: list[dict],
                     label=f"{split.upper()} ({cal})")
 
         ax.set_xlabel("Lead time (h)")
-        ax.set_ylabel(f"CRPS ({VARIABLE_UNITS.get(vname, '')})")
-        ax.set_title(VARIABLE_LABELS.get(vname, vname))
+        ax.set_ylabel(f"CRPS ({VAR_UNITS.get(vname, '')})")
+        ax.set_title(VAR_LABELS.get(vname, vname))
         ax.legend(fontsize=6)
         ax.grid(True, alpha=0.3)
 
@@ -322,7 +243,7 @@ def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
         # Top: spread-skill ratio
         ax_ss = axes[0, vi]
         for split, key in [("id", "raw_id"), ("ood", "raw_ood")]:
-            vals = get_metric_values(
+            vals = _metric_vals(
                 rows, split, "calibrated", vname, "spread_skill",
             )
             if not vals:
@@ -333,18 +254,18 @@ def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
                        label=split.upper())
         ax_ss.axhline(1.0, color="black", linewidth=0.8, linestyle="--")
         ax_ss.set_ylabel("Spread-skill ratio")
-        ax_ss.set_title(f"{VARIABLE_LABELS.get(vname, vname)} — Spread/Skill")
+        ax_ss.set_title(f"{VAR_LABELS.get(vname, vname)} — Spread/Skill")
         ax_ss.legend(fontsize=7)
         ax_ss.grid(True, alpha=0.3)
 
         # Bottom: interval coverage
         ax_cov = axes[1, vi]
         for pct_label, pct_val in [("50", 0.5), ("80", 0.8), ("90", 0.9)]:
-            id_vals = get_metric_values(
+            id_vals = _metric_vals(
                 rows, "id", "calibrated", vname,
                 f"coverage_{pct_label}",
             )
-            ood_vals = get_metric_values(
+            ood_vals = _metric_vals(
                 rows, "ood", "calibrated", vname,
                 f"coverage_{pct_label}",
             )
@@ -368,7 +289,7 @@ def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
             )
         ax_cov.set_xlabel("Lead time (h)")
         ax_cov.set_ylabel("Coverage")
-        ax_cov.set_title(f"{VARIABLE_LABELS.get(vname, vname)} — Coverage")
+        ax_cov.set_title(f"{VAR_LABELS.get(vname, vname)} — Coverage")
         ax_cov.legend(fontsize=6, ncol=2)
         ax_cov.grid(True, alpha=0.3)
 
@@ -390,8 +311,8 @@ def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
     var_names = [sv["short_name"] for sv in cfg["state_variables"]]
     lead_72 = 72
 
-    rh_id = load_rank_histograms(metrics_dir, "id", "calibrated")
-    rh_ood = load_rank_histograms(metrics_dir, "ood", "calibrated")
+    rh_id = _load_json(os.path.join(metrics_dir, "rank_hist_id_calibrated.json"))
+    rh_ood = _load_json(os.path.join(metrics_dir, "rank_hist_ood_calibrated.json"))
 
     fig, axes = plt.subplots(
         1, len(var_names), figsize=(4 * len(var_names), 3.5), squeeze=False,
@@ -410,7 +331,7 @@ def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
         if id_bins is None and ood_bins is None:
             ax.text(0.5, 0.5, "No data", ha="center", va="center",
                     transform=ax.transAxes)
-            ax.set_title(VARIABLE_LABELS.get(vname, vname))
+            ax.set_title(VAR_LABELS.get(vname, vname))
             continue
 
         n_bins = len(id_bins) if id_bins is not None else len(ood_bins)
@@ -430,7 +351,7 @@ def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
 
         ax.set_xlabel("Rank")
         ax.set_ylabel("Frequency")
-        ax.set_title(f"{VARIABLE_LABELS.get(vname, vname)} @ {lead_72}h")
+        ax.set_title(f"{VAR_LABELS.get(vname, vname)} @ {lead_72}h")
         ax.legend(fontsize=7)
 
     fig.suptitle(f"Calibrated Rank Histograms at {lead_72}h", fontsize=13)
@@ -469,10 +390,10 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     # Load data
-    rows = load_metrics(args.metrics)
-    bs_rows = load_bootstrap(args.metrics)
-    pers_rows = load_persistence(args.metrics)
-    anomalies = load_anomalies(args.metrics)
+    rows = _load_csv(os.path.join(args.metrics, "metrics.csv"))
+    bs_rows = _load_csv(os.path.join(args.metrics, "bootstrap_ci.csv"))
+    pers_rows = _load_csv(os.path.join(args.metrics, "persistence_rmse.csv"))
+    anomalies = _load_json(os.path.join(args.metrics, "t2m_anomalies.json"))
 
     if not rows:
         print("No metrics found. Run evaluate_shift.py first.")

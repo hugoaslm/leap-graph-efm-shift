@@ -1,65 +1,20 @@
-#!/usr/bin/env python3
-"""
-Two-phase training wrapper for the Graph-EFM temporal-shift experiment.
-
-Phase A: train with ar_steps=1 (single-step), save best checkpoint.
-Phase B: resume from Phase A best, train with ar_steps=4 (multi-step).
-
-Supports Colab budget management via --max_minutes.
-
-Usage:
-    python scripts/train_shift_model.py \\
-        --config configs/wb2_shift_64x32_graph_efm.yaml \\
-        --phase a \\
-        --max_minutes 120
-
-    python scripts/train_shift_model.py \\
-        --config configs/wb2_shift_64x32_graph_efm.yaml \\
-        --phase b \\
-        --resume checkpoints/best_phase_a.ckpt \\
-        --max_minutes 120
-"""
-from __future__ import annotations
-
-import os
-import signal
-import subprocess
-import sys
-import time
+import os, signal, subprocess, sys, shutil, time
 from argparse import ArgumentParser
-from pathlib import Path
 
 import yaml
 
-# Path to the neural-lam-prob-model directory
-REPO_ROOT = os.path.join(
-    os.path.dirname(__file__), "..", "neural-lam-prob-model"
-)
-REPO_ROOT = os.path.abspath(REPO_ROOT)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "neural-lam-prob-model"))
+CHECKPOINT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "checkpoints"))
 
-CHECKPOINT_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "checkpoints"
-)
-CHECKPOINT_DIR = os.path.abspath(CHECKPOINT_DIR)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def resolve_path(path: str) -> str:
-    """Resolve a path relative to the workspace root."""
-    workspace = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..")
-    )
+    workspace = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if os.path.isabs(path):
         return path
     return os.path.abspath(os.path.join(workspace, path))
 
 
-def build_train_args(cfg: dict, phase: str, config_path: str,
-                     resume_ckpt: str | None = None) -> list[str]:
-    """Build the argument list for train_model.py from the YAML config."""
+def build_train_args(cfg, phase, config_path, resume_ckpt=None):
     model_cfg = cfg["model"]
     train_cfg = cfg["training"][f"phase_{phase}"]
     forecast_cfg = cfg["forecast"]
@@ -109,42 +64,24 @@ def build_train_args(cfg: dict, phase: str, config_path: str,
     return args
 
 
-def run_with_timeout(cmd: list[str], max_minutes: int,
-                     cwd: str) -> subprocess.CompletedProcess:
-    """Run a subprocess with a wall-clock timeout."""
-    print(f"\n{'=' * 60}")
-    print(f"Training phase (max {max_minutes} min)")
-    print(f"{'=' * 60}")
-    print(f"Command: {' '.join(cmd)}")
-    print(f"Working dir: {cwd}")
-    print(f"{'=' * 60}\n")
-
-    start = time.time()
+def run_with_timeout(cmd, max_minutes, cwd):
     timeout_sec = max_minutes * 60
-
+    start = time.time()
     if sys.platform == "win32":
-        # Windows: no signal-based timeout; just run
         proc = subprocess.Popen(cmd, cwd=cwd)
     else:
         proc = subprocess.Popen(cmd, cwd=cwd, preexec_fn=os.setsid)
-
     try:
         remaining = timeout_sec
         while remaining > 0:
             try:
                 ret = proc.wait(timeout=min(remaining, 30))
                 elapsed = time.time() - start
-                print(f"\nTraining completed in {elapsed / 60:.1f} min "
-                      f"(exit code {ret})")
-                return subprocess.CompletedProcess(
-                    cmd, ret, stdout="", stderr=""
-                )
+                print(f"Training finished ({elapsed/60:.1f} min)")
+                return subprocess.CompletedProcess(cmd, ret, stdout="", stderr="")
             except subprocess.TimeoutExpired:
                 remaining = timeout_sec - (time.time() - start)
-
-        # Timeout reached
-        print(f"\nTimeout ({max_minutes} min) reached — "
-              f"terminating training...")
+        print(f"Timeout ({max_minutes} min), stopping.")
         if sys.platform == "win32":
             proc.terminate()
         else:
@@ -157,11 +94,8 @@ def run_with_timeout(cmd: list[str], max_minutes: int,
             else:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             proc.wait()
-
         return subprocess.CompletedProcess(cmd, -1, stdout="", stderr="")
-
     except KeyboardInterrupt:
-        print("\nInterrupted — terminating training...")
         if sys.platform == "win32":
             proc.terminate()
         else:
@@ -170,16 +104,12 @@ def run_with_timeout(cmd: list[str], max_minutes: int,
         raise
 
 
-def find_best_checkpoint() -> str | None:
-    """Find the min_val_loss checkpoint from the latest run."""
+def find_best_checkpoint():
     saved_models = os.path.join(REPO_ROOT, "saved_models")
     if not os.path.isdir(saved_models):
         return None
-
-    # Find most recent run directory
     run_dirs = sorted(
-        [d for d in os.listdir(saved_models)
-         if os.path.isdir(os.path.join(saved_models, d))],
+        [d for d in os.listdir(saved_models) if os.path.isdir(os.path.join(saved_models, d))],
         reverse=True,
     )
     for run_dir in run_dirs:
@@ -231,63 +161,43 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load config
     config_path = resolve_path(args.config)
     with open(config_path, "r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
 
-    # Validate phase
     if args.phase == "b" and args.resume is None:
-        # Try to auto-find the Phase A checkpoint
         auto = find_best_checkpoint()
         if auto:
-            print(f"Auto-resume from: {auto}")
             args.resume = auto
         else:
-            parser.error(
-                "Phase B requires --resume <checkpoint>. "
-                "No checkpoint found automatically."
-            )
+            parser.error("Phase B needs --resume <checkpoint> or a completed Phase A run.")
 
     if args.phase == "b":
         assert args.resume, "Phase B requires --resume"
-        print(f"Resuming from: {resolve_path(args.resume)}")
 
-    # Build command
-    cmd = build_train_args(
-        cfg,
-        args.phase,
-        args.config,
-        resume_ckpt=args.resume if args.phase == "b" else None,
-    )
+    cmd = build_train_args(cfg, args.phase, args.config,
+                           resume_ckpt=args.resume if args.phase == "b" else None)
 
-    # Ensure directories exist
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(os.path.join(REPO_ROOT, "saved_models"), exist_ok=True)
 
     if args.dry_run:
-        print("\n[Dry run] Would execute:")
-        print("  " + " ".join(cmd))
+        print("Would run:", " ".join(cmd))
         return
 
-    # Run training
     try:
         run_with_timeout(cmd, args.max_minutes, cwd=REPO_ROOT)
     except KeyboardInterrupt:
-        print("\nTraining interrupted by user.")
+        print("Interrupted.")
         sys.exit(1)
 
-    # After training, copy the best checkpoint to the checkpoints directory
     best = find_best_checkpoint()
     if best:
-        phase_name = f"best_phase_{args.phase}.ckpt"
-        dest = os.path.join(CHECKPOINT_DIR, phase_name)
-
-        import shutil
+        dest = os.path.join(CHECKPOINT_DIR, f"best_phase_{args.phase}.ckpt")
         shutil.copy2(best, dest)
-        print(f"\nBest checkpoint saved to: {dest}")
+        print(f"Checkpoint: {dest}")
     else:
-        print("\nWarning: No checkpoint found after training.")
+        print("No checkpoint found after training.")
 
 
 if __name__ == "__main__":
