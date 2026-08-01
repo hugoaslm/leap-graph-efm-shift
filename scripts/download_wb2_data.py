@@ -21,8 +21,12 @@ def download_with_gsutil(source, dest):
 def download_with_xarray(source, dest, time_start=None, time_end=None,
                          colab_auth=False, slice_years=2):
     if colab_auth:
-        from google.colab import auth
-        auth.authenticate_user()
+        try:
+            from google.colab import auth
+            auth.authenticate_user()
+        except Exception as exc:
+            print(f"Google auth failed ({exc}); falling back to anonymous "
+                  "access (bucket is public).")
 
     # Try anonymous access first; fall back to default credentials
     for token in ["anon", None]:
@@ -75,7 +79,7 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     dest_dir = os.path.dirname(dest) or "."
     free_gb = shutil.disk_usage(dest_dir).free / 1e9
     print(f"Selected subset: {n_time} timesteps, ~{est_gb:.1f} GB "
-          f"(available disk: {free_gb:.1f} GB)")
+          f"(available disk: {free_gb:.1f} GB)", flush=True)
     if est_gb > 0.85 * free_gb:
         raise RuntimeError(
             f"Estimated download ({est_gb:.1f} GB) exceeds 85% of free disk "
@@ -85,8 +89,32 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     # Write in small time slices so dask never materializes the whole range
     # at once (avoids memory spikes / disk spills on Colab).
     slice_len = max(1, int(slice_years * 4 * 365))  # 6-hourly: 4 steps/day
+
+    # Resume: skip timesteps already written by a previous (possibly
+    # interrupted) run, provided the existing store matches our selection.
+    start = 0
     first = True
-    for t0 in range(0, n_time, slice_len):
+    if os.path.isdir(dest):
+        try:
+            with xr.open_zarr(dest, consolidated=True) as prev:
+                n_prev = prev.sizes.get("time", 0)
+                if n_prev > 0:
+                    matches = (n_prev <= n_time and np.array_equal(
+                        prev.time.values,
+                        ds.time.isel(time=slice(0, n_prev)).values))
+                    if n_prev >= n_time:
+                        print(f"Store already complete ({n_prev} timesteps).",
+                              flush=True)
+                        return
+                    if matches:
+                        start = n_prev
+                        first = False
+                        print(f"Resuming: {n_prev}/{n_time} timesteps already "
+                              "present.", flush=True)
+        except Exception:
+            pass  # unreadable/partial store -> restart fresh
+
+    for t0 in range(start, n_time, slice_len):
         t1 = min(n_time, t0 + slice_len)
         sub = ds.isel(time=slice(t0, t1))
         if first:
@@ -94,8 +122,8 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
             first = False
         else:
             sub.to_zarr(dest, mode="a", append_dim="time", consolidated=True)
-        print(f"  wrote timesteps {t0 + 1}-{t1} of {n_time}")
-    print(f"Saved {dest} (~{est_gb:.1f} GB)")
+        print(f"  wrote timesteps {t0 + 1}-{t1} of {n_time}", flush=True)
+    print(f"Saved {dest} (~{est_gb:.1f} GB)", flush=True)
 
 
 def main():
