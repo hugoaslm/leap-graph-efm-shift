@@ -121,27 +121,6 @@ def main():
             grid_weights, os.path.join(static_dir_path, "grid_weights.pt")
         )
 
-        # ---- Monthly climatology (for later t2m anomaly analysis) ----
-        # Compute mean state per calendar month from training years only.
-        print("Computing monthly climatology...")
-        fields_xds = xa.open_zarr(fields_group_path)
-        if cfg is not None:
-            train_start, train_end = cfg["splits"]["train"]
-            fields_xds = fields_xds.sel(
-                time=slice(train_start, train_end)
-            )
-        fields_xds = fields_xds.load()
-        monthly_clim = fields_xds.groupby("time.month").mean(dim="time")
-        # Save as numpy for easy reload
-        clim_dict = {}
-        for var_name in monthly_clim.data_vars:
-            clim_dict[var_name] = monthly_clim[var_name].values.astype(
-                np.float32
-            )  # (12, lon, lat) or (12, level, lon, lat)
-        np.savez(
-            os.path.join(static_dir_path, "monthly_climatology.npz"),
-            **clim_dict,
-        )
     else:
         # Create parameter weights based on height
         # based on fig A.1 in graph cast paper
@@ -162,127 +141,189 @@ def main():
         os.path.join(static_dir_path, "parameter_weights.npy"), vert_weights
     )
 
-    # Load dataset without any subsampling
-    if global_ds:
-        ds = ERA5Dataset(
-            args.dataset,
-            split="train",
-            pred_length=1,  # Use 1 to get each time step only once
-            standardize=False,
+    if global_ds and cfg is not None:
+        fields_group_path = os.path.join(
+            "data", args.dataset, "fields.zarr"
+        )
+        print("Computing monthly climatology...")
+        fields_xds = xa.open_zarr(fields_group_path)
+        train_start, train_end = cfg["splits"]["train"]
+        fields_xds = fields_xds.sel(
+            time=slice(train_start, train_end)
+        ).load()
+        monthly_clim = fields_xds.groupby("time.month").mean(dim="time")
+        clim_dict = {}
+        for var_name in monthly_clim.data_vars:
+            clim_dict[var_name] = monthly_clim[var_name].values.astype(
+                np.float32
+            )
+        np.savez(
+            os.path.join(static_dir_path, "monthly_climatology.npz"),
+            **clim_dict,
+        )
+
+        print("Computing mean and std.-dev. for parameters...")
+        state_parts = []
+        for sv in cfg["state_variables"]:
+            da = fields_xds[sv["name"]]
+            if sv["level"] is not None:
+                da = da.sel(level=sv["level"], method="nearest")
+            arr = da.values.reshape(
+                -1, da.sizes["longitude"] * da.sizes["latitude"], 1
+            )
+            state_parts.append(arr)
+        state = np.concatenate(state_parts, axis=-1).astype(np.float32)
+
+        mean = state[2:].mean(axis=(0, 1))
+        second_moment = (state[2:] ** 2).mean(axis=(0, 1))
+        std = np.sqrt(np.maximum(second_moment - mean ** 2, 0))
+        torch.save(
+            torch.tensor(mean),
+            os.path.join(static_dir_path, "parameter_mean.pt"),
+        )
+        torch.save(
+            torch.tensor(std),
+            os.path.join(static_dir_path, "parameter_std.pt"),
+        )
+
+        print("Computing mean and std.-dev. for one-step differences...")
+        standardized = (state - mean) / std
+        diffs = standardized[2:] - standardized[1:-1]
+        diff_mean = diffs.mean(axis=(0, 1))
+        diff_second_moment = (diffs ** 2).mean(axis=(0, 1))
+        diff_std = np.sqrt(
+            np.maximum(diff_second_moment - diff_mean ** 2, 0)
+        )
+        torch.save(
+            torch.tensor(diff_mean),
+            os.path.join(static_dir_path, "diff_mean.pt"),
+        )
+        torch.save(
+            torch.tensor(diff_std),
+            os.path.join(static_dir_path, "diff_std.pt"),
         )
     else:
-        ds = WeatherDataset(
-            args.dataset,
-            split="train",
-            subsample_step=1,
-            pred_length=63,
-            standardize=False,
-        )  # Without standardization
-    loader = torch.utils.data.DataLoader(
-        ds, args.batch_size, shuffle=False, num_workers=args.n_workers
-    )
-    # Compute mean and std.-dev. of each parameter (+ flux forcing)
-    # across full dataset
-    print("Computing mean and std.-dev. for parameters...")
-    means = []
-    squares = []
-    flux_means = []
-    flux_squares = []
-    for init_batch, target_batch, forcing_batch in tqdm(loader):
+
         if global_ds:
-            batch = target_batch  # (N_batch, N_t=1, N_grid, d_features)
+            ds = ERA5Dataset(
+                args.dataset,
+                split="train",
+                pred_length=1,  # Use 1 to get each time step only once
+                standardize=False,
+            )
         else:
-            batch = torch.cat(
-                (init_batch, target_batch), dim=1
-            )  # (N_batch, N_t, N_grid, d_features)
-        means.append(torch.mean(batch, dim=(1, 2)))  # (N_batch, d_features,)
-        squares.append(
-            torch.mean(batch**2, dim=(1, 2))
-        )  # (N_batch, d_features,)
+            ds = WeatherDataset(
+                args.dataset,
+                split="train",
+                subsample_step=1,
+                pred_length=63,
+                standardize=False,
+            )  # Without standardization
+        loader = torch.utils.data.DataLoader(
+            ds, args.batch_size, shuffle=False, num_workers=args.n_workers
+        )
+        # Compute mean and std.-dev. of each parameter (+ flux forcing)
+        # across full dataset
+        print("Computing mean and std.-dev. for parameters...")
+        means = []
+        squares = []
+        flux_means = []
+        flux_squares = []
+        for init_batch, target_batch, forcing_batch in tqdm(loader):
+            if global_ds:
+                batch = target_batch  # (N_batch, N_t=1, N_grid, d_features)
+            else:
+                batch = torch.cat(
+                    (init_batch, target_batch), dim=1
+                )  # (N_batch, N_t, N_grid, d_features)
+            means.append(torch.mean(batch, dim=(1, 2)))  # (N_batch, d_features,)
+            squares.append(
+                torch.mean(batch**2, dim=(1, 2))
+            )  # (N_batch, d_features,)
+
+            if not global_ds:
+                # Flux at 1st windowed position is index 1 in forcing
+                flux_batch = forcing_batch[:, :, :, 1]
+                flux_means.append(torch.mean(flux_batch))  # (,)
+                flux_squares.append(torch.mean(flux_batch**2))  # (,)
+
+        mean = torch.mean(torch.cat(means, dim=0), dim=0)  # (d_features)
+        second_moment = torch.mean(torch.cat(squares, dim=0), dim=0)
+        std = torch.sqrt(second_moment - mean**2)  # (d_features)
+
+        print("Saving mean, std.-dev, flux_stats...")
+        torch.save(mean, os.path.join(static_dir_path, "parameter_mean.pt"))
+        torch.save(std, os.path.join(static_dir_path, "parameter_std.pt"))
 
         if not global_ds:
-            # Flux at 1st windowed position is index 1 in forcing
-            flux_batch = forcing_batch[:, :, :, 1]
-            flux_means.append(torch.mean(flux_batch))  # (,)
-            flux_squares.append(torch.mean(flux_batch**2))  # (,)
+            flux_mean = torch.mean(torch.stack(flux_means))  # (,)
+            flux_second_moment = torch.mean(torch.stack(flux_squares))  # (,)
+            flux_std = torch.sqrt(flux_second_moment - flux_mean**2)  # (,)
+            flux_stats = torch.stack((flux_mean, flux_std))
+            torch.save(flux_stats, os.path.join(static_dir_path, "flux_stats.pt"))
 
-    mean = torch.mean(torch.cat(means, dim=0), dim=0)  # (d_features)
-    second_moment = torch.mean(torch.cat(squares, dim=0), dim=0)
-    std = torch.sqrt(second_moment - mean**2)  # (d_features)
-
-    print("Saving mean, std.-dev, flux_stats...")
-    torch.save(mean, os.path.join(static_dir_path, "parameter_mean.pt"))
-    torch.save(std, os.path.join(static_dir_path, "parameter_std.pt"))
-
-    if not global_ds:
-        flux_mean = torch.mean(torch.stack(flux_means))  # (,)
-        flux_second_moment = torch.mean(torch.stack(flux_squares))  # (,)
-        flux_std = torch.sqrt(flux_second_moment - flux_mean**2)  # (,)
-        flux_stats = torch.stack((flux_mean, flux_std))
-        torch.save(flux_stats, os.path.join(static_dir_path, "flux_stats.pt"))
-
-    # Compute mean and std.-dev. of one-step differences across the dataset
-    print("Computing mean and std.-dev. for one-step differences...")
-    # Re-load dataset with standardization
-    if global_ds:
-        ds_standard = ERA5Dataset(
-            args.dataset,
-            split="train",
-            pred_length=1,  # Use 1 to get each time step only once
-            standardize=True,
-        )
-    else:
-        ds_standard = WeatherDataset(
-            args.dataset,
-            split="train",
-            subsample_step=1,
-            pred_length=63,
-            standardize=True,
-        )
-        used_subsample_len = (65 // args.step_length) * args.step_length
-    loader_standard = torch.utils.data.DataLoader(
-        ds_standard, args.batch_size, shuffle=False, num_workers=args.n_workers
-    )
-
-    diff_means = []
-    diff_squares = []
-    for init_batch, target_batch, _ in tqdm(loader_standard):
-        batch = torch.cat(
-            (init_batch, target_batch), dim=1
-        )  # (N_batch, N_t', N_grid, d_features)
-
+        # Compute mean and std.-dev. of one-step differences across the dataset
+        print("Computing mean and std.-dev. for one-step differences...")
+        # Re-load dataset with standardization
         if global_ds:
-            # Only extract state at init time and target at next time
-            stepped_batch = batch[:, 1:]  # (N_batch, 2, N_grid, d_features)
-        else:
-            # Note: batch contains only 1h-steps
-            stepped_batch = torch.cat(
-                [
-                    batch[:, ss_i : used_subsample_len : args.step_length]
-                    for ss_i in range(args.step_length)
-                ],
-                dim=0,
+            ds_standard = ERA5Dataset(
+                args.dataset,
+                split="train",
+                pred_length=1,  # Use 1 to get each time step only once
+                standardize=True,
             )
-            # (N_batch', N_t, N_grid, d_features),
-            # N_batch' = args.step_length*N_batch
+        else:
+            ds_standard = WeatherDataset(
+                args.dataset,
+                split="train",
+                subsample_step=1,
+                pred_length=63,
+                standardize=True,
+            )
+            used_subsample_len = (65 // args.step_length) * args.step_length
+        loader_standard = torch.utils.data.DataLoader(
+            ds_standard, args.batch_size, shuffle=False, num_workers=args.n_workers
+        )
 
-        batch_diffs = stepped_batch[:, 1:] - stepped_batch[:, :-1]
-        # (N_batch', N_t-1, N_grid, d_features)
+        diff_means = []
+        diff_squares = []
+        for init_batch, target_batch, _ in tqdm(loader_standard):
+            batch = torch.cat(
+                (init_batch, target_batch), dim=1
+            )  # (N_batch, N_t', N_grid, d_features)
 
-        diff_means.append(
-            torch.mean(batch_diffs, dim=(1, 2))
-        )  # (N_batch', d_features,)
-        diff_squares.append(
-            torch.mean(batch_diffs**2, dim=(1, 2))
-        )  # (N_batch', d_features,)
+            if global_ds:
+                # Only extract state at init time and target at next time
+                stepped_batch = batch[:, 1:]  # (N_batch, 2, N_grid, d_features)
+            else:
+                # Note: batch contains only 1h-steps
+                stepped_batch = torch.cat(
+                    [
+                        batch[:, ss_i : used_subsample_len : args.step_length]
+                        for ss_i in range(args.step_length)
+                    ],
+                    dim=0,
+                )
+                # (N_batch', N_t, N_grid, d_features),
+                # N_batch' = args.step_length*N_batch
 
-    diff_mean = torch.mean(torch.cat(diff_means, dim=0), dim=0)  # (d_features)
-    diff_second_moment = torch.mean(torch.cat(diff_squares, dim=0), dim=0)
-    diff_std = torch.sqrt(diff_second_moment - diff_mean**2)  # (d_features)
+            batch_diffs = stepped_batch[:, 1:] - stepped_batch[:, :-1]
+            # (N_batch', N_t-1, N_grid, d_features)
 
-    print("Saving one-step difference mean and std.-dev...")
-    torch.save(diff_mean, os.path.join(static_dir_path, "diff_mean.pt"))
-    torch.save(diff_std, os.path.join(static_dir_path, "diff_std.pt"))
+            diff_means.append(
+                torch.mean(batch_diffs, dim=(1, 2))
+            )  # (N_batch', d_features,)
+            diff_squares.append(
+                torch.mean(batch_diffs**2, dim=(1, 2))
+            )  # (N_batch', d_features,)
+
+        diff_mean = torch.mean(torch.cat(diff_means, dim=0), dim=0)  # (d_features)
+        diff_second_moment = torch.mean(torch.cat(diff_squares, dim=0), dim=0)
+        diff_std = torch.sqrt(diff_second_moment - diff_mean**2)  # (d_features)
+
+        print("Saving one-step difference mean and std.-dev...")
+        torch.save(diff_mean, os.path.join(static_dir_path, "diff_mean.pt"))
+        torch.save(diff_std, os.path.join(static_dir_path, "diff_std.pt"))
 
 
 if __name__ == "__main__":
