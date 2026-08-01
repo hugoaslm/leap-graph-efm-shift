@@ -1,4 +1,4 @@
-import os, shutil, subprocess, sys, time
+import os, shutil, subprocess, sys, tarfile, time
 from argparse import ArgumentParser
 
 import xarray as xr
@@ -68,32 +68,38 @@ def copy_path(src, dst):
         shutil.copy2(src, dst)
 
 
-def atomic_copytree(src, dst):
-    tmp = f"{dst}.tmp"
-    if os.path.islink(tmp) or os.path.exists(tmp):
-        if os.path.isdir(tmp) and not os.path.islink(tmp):
-            shutil.rmtree(tmp)
-        else:
-            os.remove(tmp)
-    shutil.copytree(src, tmp)
-    if os.path.islink(dst) or os.path.exists(dst):
-        if os.path.isdir(dst) and not os.path.islink(dst):
-            shutil.rmtree(dst)
-        else:
-            os.remove(dst)
-    os.rename(tmp, dst)
-
-
-def restore_from_drive(local_path, drive_path, nl_path=None):
-    if not os.path.exists(local_path) and os.path.exists(drive_path):
-        print(f"Copying from Drive: {drive_path}")
-        copy_path(drive_path, local_path)
-    if nl_path is not None and not os.path.lexists(nl_path) and \
-            os.path.exists(local_path):
+def ensure_symlink(local_path, nl_path):
+    if os.path.lexists(nl_path):
+        return
+    if os.path.exists(local_path):
         os.symlink(local_path, nl_path)
 
 
-def persist_output(nl_path, local_path, drive_path):
+def build_archive(local_tar, local_data, graph_dir):
+    tmp = local_tar + ".tmp"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    with tarfile.open(tmp, "w") as tar:
+        for name in ["fields.zarr", "static"]:
+            path = os.path.join(local_data, name)
+            if os.path.isdir(path):
+                tar.add(path, arcname=name)
+        if graph_dir is not None and os.path.isdir(graph_dir):
+            tar.add(graph_dir, arcname="graphs/" + os.path.basename(graph_dir))
+    os.replace(tmp, local_tar)
+
+
+def upload_to_drive(local_tar, drive_archive):
+    tmp = drive_archive + ".tmp"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    shutil.copy2(local_tar, tmp)
+    if os.path.exists(drive_archive):
+        os.remove(drive_archive)
+    os.replace(tmp, drive_archive)
+
+
+def finalize_output(nl_path, local_path):
     if not os.path.exists(nl_path) and not os.path.exists(local_path):
         return
     if os.path.islink(nl_path):
@@ -107,11 +113,6 @@ def persist_output(nl_path, local_path, drive_path):
         else:
             os.remove(nl_path)
         os.symlink(local_path, nl_path)
-    if not os.path.exists(drive_path):
-        print(f"Copying to Drive: {local_path}")
-        copy_path(local_path, drive_path)
-    elif os.path.isdir(local_path):
-        shutil.copytree(local_path, drive_path, dirs_exist_ok=True)
 
 
 def main():
@@ -143,14 +144,42 @@ def main():
     fields_zarr = os.path.join(local_data, "fields.zarr")
     drive_fields_zarr = os.path.join(drive_data, "fields.zarr")
     nl_fields_zarr = os.path.join(nl_data, "fields.zarr")
+    local_forcing = os.path.join(local_data, "forcing.zarr")
+    local_static = os.path.join(local_data, "static")
+    nl_forcing = os.path.join(nl_data, "forcing.zarr")
+    nl_static = os.path.join(nl_data, "static")
+    drive_archive = os.path.join(args.drive, "data", data_name + ".tar")
+    graph_name = cfg["graph"]["name"]
+    local_graph = os.path.join(args.nl, "graphs", graph_name)
+    drive_graph = os.path.join(args.drive, "graphs", graph_name)
+    local_tar = os.path.join(args.project, "data", data_name + ".tar")
+
     retire_invalid_store(fields_zarr, cfg)
     retire_invalid_store(drive_fields_zarr, cfg)
     retire_invalid_store(nl_fields_zarr, cfg)
+    restored_from = "local"
+    safety_uploaded = False
     if not valid_fields_store(fields_zarr, cfg):
-        if valid_fields_store(drive_fields_zarr, cfg):
-            print("Copying data from Drive cache...")
+        if os.path.exists(drive_archive) and \
+                os.path.getsize(drive_archive) > 1_000_000_000:
+            restored_from = "archive"
+            staging = os.path.join(local_data, "_restore.tar")
+            size_gb = os.path.getsize(drive_archive) / 1e9
+            print(f"Copying data archive from Drive ({size_gb:.1f} GB)...")
+            t0 = time.time()
+            shutil.copy2(drive_archive, staging)
+            print(f"  archive copied in {time.time() - t0:.0f}s")
+            t0 = time.time()
+            with tarfile.open(staging) as tar:
+                tar.extractall(local_data, filter="data")
+            os.remove(staging)
+            print(f"  archive extracted in {time.time() - t0:.0f}s")
+        elif valid_fields_store(drive_fields_zarr, cfg):
+            restored_from = "legacy"
+            print("Copying legacy Drive cache (one-time migration)...")
             shutil.copytree(drive_data, local_data, dirs_exist_ok=True)
         else:
+            restored_from = "download"
             print("Downloading WB2 data (~4 GB; public bucket, no auth)...")
             proc = subprocess.run(
                 [sys.executable, "-u",
@@ -204,32 +233,24 @@ def main():
         print(f"Rechunk complete ({time.time() - t0:.0f}s).")
     report("fields.zarr (rechunk/validate)")
 
-    drive_missing = not valid_fields_store(drive_fields_zarr, cfg)
-    if not drive_missing and needs_rechunk(drive_fields_zarr):
-        print("Drive fields cache is still time:1-chunked; upgrading...")
-        drive_missing = True
-    if drive_missing:
-        size = 0
-        for root, _, files in os.walk(fields_zarr):
-            for f in files:
-                size += os.path.getsize(os.path.join(root, f))
-        print(f"Copying rechunked fields.zarr to Drive "
-              f"({size / 1e9:.1f} GB, ~500 files; can take a few minutes)...")
-        atomic_copytree(fields_zarr, drive_fields_zarr)
-        print("Drive fields cache updated.")
-    else:
-        print("Drive fields cache up to date.")
+    if not os.path.exists(drive_archive) and restored_from != "legacy":
+        print("Uploading fields-only safety archive to Drive...")
+        safety_tar = os.path.join(args.project, "data", data_name + "_fields.tar")
+        build_archive(safety_tar, local_data, None)
+        upload_to_drive(safety_tar, drive_archive)
+        safety_uploaded = True
+        print("Drive safety archive ready.")
 
-    graph_name = cfg["graph"]["name"]
-    local_graph = os.path.join(args.nl, "graphs", graph_name)
-    drive_graph = os.path.join(args.drive, "graphs", graph_name)
-    restore_from_drive(os.path.join(local_data, "forcing.zarr"),
-                       os.path.join(drive_data, "forcing.zarr"),
-                       os.path.join(nl_data, "forcing.zarr"))
-    restore_from_drive(os.path.join(local_data, "static"),
-                       os.path.join(drive_data, "static"),
-                       os.path.join(nl_data, "static"))
-    restore_from_drive(local_graph, drive_graph)
+    ensure_symlink(local_forcing, nl_forcing)
+    ensure_symlink(local_static, nl_static)
+    if not os.path.isdir(local_graph):
+        extracted_graph = os.path.join(local_data, "graphs", graph_name)
+        if os.path.isdir(extracted_graph):
+            print(f"Restoring graph from archive: {local_graph}")
+            shutil.move(extracted_graph, local_graph)
+        elif os.path.isdir(drive_graph):
+            print(f"Copying graph from Drive: {local_graph}")
+            copy_path(drive_graph, local_graph)
 
     config_path = os.path.abspath(args.config)
     prep_script = os.path.join(args.repo, "scripts",
@@ -247,17 +268,17 @@ def main():
         steps_pending.remove(step)
         print(f"[{step} took {time.time() - t0:.0f}s]")
         if step == "forcing":
-            persist_output(os.path.join(nl_data, "forcing.zarr"),
-                           os.path.join(local_data, "forcing.zarr"),
-                           os.path.join(drive_data, "forcing.zarr"))
+            finalize_output(nl_forcing, local_forcing)
         elif step in ("grid_features", "parameter_weights"):
-            persist_output(os.path.join(nl_data, "static"),
-                           os.path.join(local_data, "static"),
-                           os.path.join(drive_data, "static"))
-        elif step == "mesh":
-            if os.path.isdir(local_graph) and not os.path.exists(drive_graph):
-                print(f"Copying to Drive: {local_graph}")
-                copy_path(local_graph, drive_graph)
+            finalize_output(nl_static, local_static)
+
+    if not os.path.exists(drive_archive) or safety_uploaded:
+        print("Building full data archive and uploading to Drive...")
+        build_archive(local_tar, local_data, local_graph)
+        upload_to_drive(local_tar, drive_archive)
+        print("Drive archive updated.")
+    else:
+        print("Drive archive up to date.")
 
     print(f"PREP FINISHED in {time.time() - t_start:.0f}s total.")
 
