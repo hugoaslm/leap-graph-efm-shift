@@ -3,6 +3,7 @@ import json, os, sys, csv
 from argparse import ArgumentParser
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -69,121 +70,59 @@ def build_model_args(cfg: dict):
     return a
 
 
-def make_eval_sampler(
-    cfg: dict,
-    split_key: str,
+def dataset_base_times(dataset: ERA5Dataset) -> np.ndarray:
+    """
+    Base init time (np.datetime64) for each dataset index.
+
+    For non-train splits the dataset initializes from the two consecutive
+    6-hourly states ending at ``time_coords[1 + 2 * idx]``, so the base
+    (init) time of dataset index ``idx`` is ``time_coords[1 + 2 * idx]``.
+    """
+    times = dataset.time_coords
+    return np.array([times[1 + 2 * idx] for idx in range(len(dataset))])
+
+
+def select_eval_indices(
+    dataset: ERA5Dataset,
     seed: int = 42,
     dates_per_month: int = 2,
-):
+) -> list:
     """
-    Build a deterministic list of (year, month, day, hour) init times.
+    Deterministic subset of dataset indices to evaluate.
 
-    For each month, selects ``dates_per_month`` distinct days.
-    For each selected day, adds BOTH a 00Z and 12Z init time.
-    Total init_times_per_month = dates_per_month * 2.
-
-    With dates_per_month=2 and a 5-year cohort: 240 total init times.
+    Samples ``dates_per_month`` distinct days per calendar month (seeded),
+    keeping every init time the dataset offers on those days. This derives
+    the init times directly from the dataset's own time coordinate, so it
+    stays consistent regardless of which hours the split starts on.
     """
-    split_dates = cfg["splits"][split_key]
-    start_year = int(split_dates[0][:4])
-    end_year = int(split_dates[1][:4])
+    base_times = dataset_base_times(dataset)
+    day_strs = np.datetime_as_string(base_times, unit="D")  # "YYYY-MM-DD"
+    by_day = defaultdict(list)
+    for idx, day_str in enumerate(day_strs):
+        by_day[day_str].append(idx)
 
     rng = np.random.RandomState(seed)
-    init_times = []
-
-    for year in range(start_year, end_year + 1):
-        for month in range(1, 13):
-            days_in_month = 28 if month == 2 else 30
-            n_dates = min(dates_per_month, days_in_month)
-            days = sorted(
-                rng.choice(
-                    days_in_month, size=n_dates, replace=False,
-                )
-                + 1  # 1-indexed
-            )
-            for day in days:
-                init_times.append((year, month, day, 0))   # 00Z
-                init_times.append((year, month, day, 12))  # 12Z
-
-    return init_times
-
-
-def build_eval_loader(
-    cfg: dict, split_key: str, init_times: list,
-    pred_length: int, batch_size: int = 1,
-):
-    """Build a DataLoader that yields samples at the specified init times."""
-    assert batch_size == 1, "Evaluation currently requires batch_size=1"
-
-    dataset = ERA5Dataset(
-        cfg["dataset"]["name"],
-        pred_length=pred_length,
-        split=split_key,
-        standardize=True,
-    )
-    # We'll manually iterate by computing the index for each init time
-    return dataset, init_times
-
-
-def idx_from_init_time(dataset: ERA5Dataset, year: int, month: int,
-                       day: int, hour: int) -> int | None:
-    """
-    Map a calendar init time to a dataset index.
-    The dataset indexes are 0-based for val/test (init_all=False),
-    so every index corresponds to a 12h step starting from the first
-    00Z or 12Z after the split start.
-    """
-    # The dataset's time coordinate determines mapping
-    # For simplicity: brute-force search
-    # Get the dataset's time coordinate (only loaded if needed)
-    if not hasattr(dataset, "_time_coords"):
-        fields_path = os.path.join(
-            "data", dataset._config["dataset"]["name"], "fields.zarr"
-        )
-        import xarray as xa
-        ds = xa.open_zarr(os.path.join(REPO_ROOT, fields_path))
-        dataset._time_coords = ds.coords["time"].values
-
-    target_str = f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:00:00"
-    target = np.datetime64(target_str)
-
-    times = dataset._time_coords
-    # The init state uses times at index init_i-1 and init_i
-    # For init_all=False, init_i = 1 + 2*idx
-    # We need times[init_i] to be the forecast base time
-    # Actually, let's compute differently.
-
-    # The dataset sample at idx has:
-    # init_i = 1 + 2*idx (since init_all=False)
-    # init_states come from times[init_i-1] and times[init_i]
-    # target comes from times[init_i+1:init_i+1+pred_length]
-
-    # We want the forecast to start at a 00Z or 12Z time.
-    # At minimum, we need times[init_i] to match our target hour
-    # and times[init_i-1] is 6h before.
-
-    # Find the first time that matches our target
-    for i in range(len(times)):
-        if times[i] == target:
-            # init_i = i means init state at times[i-1], times[i]
-            # idx = (init_i - 1) / 2 = (i - 1) / 2
-            idx = (i - 1) // 2
-            if idx >= 0 and idx < len(dataset):
-                return idx
-    return None
+    selected = []
+    for month_key in sorted({s[:7] for s in by_day}):  # "YYYY-MM"
+        days = sorted(s for s in by_day if s.startswith(month_key))
+        n = min(dates_per_month, len(days))
+        chosen = sorted(rng.choice(np.array(days), size=n, replace=False))
+        for day in chosen:
+            selected.extend(sorted(by_day[day]))
+    return selected
 
 
 def run_ensemble_forecast(
     model: GraphEFM,
     dataset: ERA5Dataset,
-    init_times: list,
+    indices: list,
     ensemble_size: int,
     pred_length: int,
     device: torch.device,
     mask: torch.Tensor | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Run ensemble forecasts for all specified init times.
+    Run ensemble forecasts for the given dataset indices.
 
     Returns:
         predictions: (n_samples, ensemble_size, pred_steps, N_grid, d_state)
@@ -192,14 +131,8 @@ def run_ensemble_forecast(
     model.eval()
     all_preds = []
     all_targets = []
-    skip_count = 0
 
-    for year, month, day, hour in tqdm(init_times, desc="Forecasting"):
-        idx = idx_from_init_time(dataset, year, month, day, hour)
-        if idx is None:
-            skip_count += 1
-            continue
-
+    for idx in tqdm(indices, desc="Forecasting"):
         init_states, target_states, forcing = dataset[idx]
         # init_states: (2, N_grid, d_state)
         # target_states: (pred_steps, N_grid, d_state)
@@ -223,35 +156,12 @@ def run_ensemble_forecast(
         all_preds.append(traj_means.squeeze(0).cpu().numpy())
         all_targets.append(target_states.cpu().numpy())
 
-    if skip_count:
-        print(f"  Skipped {skip_count} init times (outside dataset range)")
+    if not all_preds:
+        raise RuntimeError("No valid init times to forecast.")
 
     preds = np.stack(all_preds, axis=0)
     targets = np.stack(all_targets, axis=0)
     return preds, targets
-
-
-def persistence_forecast(
-    dataset: ERA5Dataset,
-    init_times: list,
-    pred_length: int,
-) -> np.ndarray:
-    """Persistence baseline: repeat the latest init state."""
-    all_targets = []
-    skip_count = 0
-
-    for year, month, day, hour in tqdm(init_times, desc="Persistence"):
-        idx = idx_from_init_time(dataset, year, month, day, hour)
-        if idx is None:
-            skip_count += 1
-            continue
-
-        _, target_states, _ = dataset[idx]
-        # target_states: (pred_steps, N_grid, d_state)
-        # init state at t=0 is the item at index 1 in the init_states
-        all_targets.append(target_states.cpu().numpy())
-
-    return np.stack(all_targets, axis=0)
 
 
 def compute_all_metrics(
@@ -415,7 +325,7 @@ def bootstrap_diff(
 
 
 def compute_t2m_anomalies(
-    cfg: dict, init_times: list, split_key: str,
+    cfg: dict, init_times: np.ndarray,
 ) -> dict:
     """
     Compute latitude-weighted t2m anomalies for each init time,
@@ -444,14 +354,15 @@ def compute_t2m_anomalies(
     ds = xa.open_zarr(fields_path)
 
     anomalies = []
-    for year, month, day, hour in init_times:
-        t_str = f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:00:00"
+    for t in init_times:
+        t_str = np.datetime_as_string(t, unit="m") + ":00"
         try:
             t2m_val = ds["2m_temperature"].sel(
                 time=t_str, method="nearest"
             ).values  # (lon, lat)
         except Exception:
             continue
+        month = int(np.datetime_as_string(t, unit="M")[5:7])
         clim_val = t2m_clim[month - 1]  # (lon, lat)
         anom = t2m_val - clim_val
         # Latitude-weighted mean
@@ -490,11 +401,10 @@ def compute_persistence_rmse(
             )
 
             # Expand pred to match
-            pred_v = pred_v.unsqueeze(1)  # (S, 1, N, 1) → need broadcast
+            pred_v = pred_v.unsqueeze(1)  # (S, 1, N, 1)
 
             mse_v = nl_metrics.mse(
-                pred_v.expand(-1, targ_v.shape[0] if False else 1, -1, -1)
-                .squeeze(1),
+                pred_v.squeeze(1),
                 targ_v,
                 None,
                 grid_weights=grid_weights,
@@ -573,25 +483,30 @@ def main():
     ensemble_size = args.ensemble_size
     cal_grid = cfg["calibration"]["search_grid"]
 
-    # Grid weights and mask (from model buffers)
-    grid_weights = model.grid_weights  # (N,)
-    mask = model.interior_mask_bool  # (N,) or None
+    # Grid weights and mask (from model buffers). Fall back to None if the
+    # model does not expose them (metrics then degrade to unweighted).
+    grid_weights = getattr(model, "grid_weights", None)  # (N,) or None
+    mask = getattr(model, "interior_mask_bool", None)  # (N,) or None
 
     # ---- 1. Build evaluation samples ----
     splits = ["val", "id", "ood"]
-    all_init_times = {}
+    datasets = {}
     for split_key in splits:
-        init_times = make_eval_sampler(cfg, split_key, seed=seed,
-                                       dates_per_month=dates_per_month)
-        all_init_times[split_key] = init_times
-        print(f"{split_key}: {len(init_times)} init times")
+        datasets[split_key] = ERA5Dataset(
+            cfg["dataset"]["name"], pred_length=eval_leads,
+            split=split_key, standardize=True)
+
+    eval_indices = {}
+    for split_key in splits:
+        eval_indices[split_key] = select_eval_indices(
+            datasets[split_key], seed=seed,
+            dates_per_month=dates_per_month)
+        print(f"{split_key}: {len(eval_indices[split_key])} init times")
 
     predictions, targets = {}, {}
     for split_key in splits:
-        dataset = ERA5Dataset(cfg["dataset"]["name"], pred_length=eval_leads,
-                              split=split_key, standardize=True)
         pred_arr, targ_arr = run_ensemble_forecast(
-            model, dataset, all_init_times[split_key],
+            model, datasets[split_key], eval_indices[split_key],
             ensemble_size, eval_leads, device, mask)
         predictions[split_key] = pred_arr
         targets[split_key] = targ_arr
@@ -637,13 +552,9 @@ def main():
     # Persistence baseline
     pers_rmse = defaultdict(dict)
     for split_key in ["id", "ood"]:
-        dataset = ERA5Dataset(cfg["dataset"]["name"], pred_length=eval_leads,
-                              split=split_key, standardize=True)
+        dataset = datasets[split_key]
         init_latest, targ_all = [], []
-        for year, month, day, hour in all_init_times[split_key]:
-            idx = idx_from_init_time(dataset, year, month, day, hour)
-            if idx is None:
-                continue
+        for idx in eval_indices[split_key]:
             init_states, target_states, _ = dataset[idx]
             init_latest.append(init_states[1].cpu().numpy())
             targ_all.append(target_states.cpu().numpy())
@@ -659,7 +570,9 @@ def main():
     # t2m anomalies
     anomalies = {}
     for split_key in splits:
-        anom = compute_t2m_anomalies(cfg, all_init_times[split_key], split_key)
+        base_times = dataset_base_times(datasets[split_key])
+        init_times = base_times[eval_indices[split_key]]
+        anom = compute_t2m_anomalies(cfg, init_times)
         anomalies[split_key] = anom
         if anom:
             print(f"  {split_key} t2m anomaly: {anom['mean']:.3f} K")

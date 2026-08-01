@@ -54,6 +54,10 @@ class ERA5Dataset(torch.utils.data.Dataset):
         fields_ds_split = fields_xds.sel(time=split_slices[split])
         forcing_ds_split = forcing_xda.sel(time=split_slices[split])
 
+        # Expose the split-sliced time coordinate so evaluation scripts can
+        # map dataset indices to calendar init times.
+        self.time_coords = fields_ds_split.coords["time"].values
+
         # Compute dataset length
         timesteps_in_split = len(fields_ds_split.coords["time"])
         self.pred_length = pred_length

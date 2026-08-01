@@ -4,7 +4,9 @@ from argparse import ArgumentParser
 import yaml
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "neural-lam-prob-model"))
-CHECKPOINT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "checkpoints"))
+# Checkpoints live next to the neural-lam clone (e.g. <workspace>/checkpoints),
+# matching the paths the Colab notebook expects.
+CHECKPOINT_DIR = os.path.abspath(os.path.join(REPO_ROOT, "..", "checkpoints"))
 
 
 def resolve_path(path: str) -> str:

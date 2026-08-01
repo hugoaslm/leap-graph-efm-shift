@@ -1,6 +1,7 @@
-import os, subprocess, sys
+import os, shutil, subprocess, sys
 from argparse import ArgumentParser
 
+import numpy as np
 import xarray as xr
 
 # State variables + static fields needed for grid features.
@@ -17,7 +18,8 @@ def download_with_gsutil(source, dest):
     subprocess.run(["gsutil", "-m", "cp", "-r", source, dest], check=True)
 
 
-def download_with_xarray(source, dest, time_start=None, time_end=None, colab_auth=False):
+def download_with_xarray(source, dest, time_start=None, time_end=None,
+                         colab_auth=False, slice_years=2):
     if colab_auth:
         from google.colab import auth
         auth.authenticate_user()
@@ -49,13 +51,50 @@ def download_with_xarray(source, dest, time_start=None, time_end=None, colab_aut
         "time", "longitude", "latitude", "level", missing_dims="ignore"
     )
 
+    n_time = ds.sizes["time"]
+    if n_time == 0:
+        raise RuntimeError(f"Empty time selection ({time_start}..{time_end})")
+
+    # One chunk per timestep -> memory-safe incremental appends.
     encoding = {}
     for var in ds.data_vars:
         shape = ds[var].shape
         if len(shape) >= 3:
             encoding[var] = {"chunks": (1,) + tuple(-1 for _ in shape[1:])}
-    ds.to_zarr(dest, mode="w", encoding=encoding, consolidated=True)
-    print(f"Saved {dest} ({ds.nbytes/1e9:.1f} GB)")
+
+    # Estimate final on-disk size (only the selected subset is written).
+    bytes_per_time = 0
+    for var in ds.data_vars:
+        nbytes_per_elem = ds[var].dtype.itemsize
+        per_time = int(np.prod(ds[var].sizes[k] for k in ds[var].dims
+                               if k != "time"))
+        bytes_per_time += nbytes_per_elem * per_time
+    est_gb = bytes_per_time * n_time / 1e9
+
+    dest_dir = os.path.dirname(dest) or "."
+    free_gb = shutil.disk_usage(dest_dir).free / 1e9
+    print(f"Selected subset: {n_time} timesteps, ~{est_gb:.1f} GB "
+          f"(available disk: {free_gb:.1f} GB)")
+    if est_gb > 0.85 * free_gb:
+        raise RuntimeError(
+            f"Estimated download ({est_gb:.1f} GB) exceeds 85% of free disk "
+            f"({free_gb:.1f} GB). Free up space or shorten the time range."
+        )
+
+    # Write in small time slices so dask never materializes the whole range
+    # at once (avoids memory spikes / disk spills on Colab).
+    slice_len = max(1, int(slice_years * 4 * 365))  # 6-hourly: 4 steps/day
+    first = True
+    for t0 in range(0, n_time, slice_len):
+        t1 = min(n_time, t0 + slice_len)
+        sub = ds.isel(time=slice(t0, t1))
+        if first:
+            sub.to_zarr(dest, mode="w", encoding=encoding, consolidated=True)
+            first = False
+        else:
+            sub.to_zarr(dest, mode="a", append_dim="time", consolidated=True)
+        print(f"  wrote timesteps {t0 + 1}-{t1} of {n_time}")
+    print(f"Saved {dest} (~{est_gb:.1f} GB)")
 
 
 def main():
@@ -65,6 +104,9 @@ def main():
     parser.add_argument("--time_start", default="1979-01-01")
     parser.add_argument("--time_end", default="2022-12-31")
     parser.add_argument("--method", default="xarray", choices=["xarray", "gsutil"])
+    parser.add_argument("--slice_years", type=int, default=2,
+                        help="Download/write in slices of this many years each "
+                        "(keeps peak memory and disk low on Colab)")
     parser.add_argument("--colab_auth", action="store_true",
                         help="Authenticate with Google before accessing GCS")
     args = parser.parse_args()
@@ -75,7 +117,8 @@ def main():
         download_with_gsutil(args.source, args.output)
     else:
         download_with_xarray(args.source, args.output, args.time_start, args.time_end,
-                             colab_auth=args.colab_auth)
+                             colab_auth=args.colab_auth,
+                             slice_years=args.slice_years)
 
     ds = xr.open_zarr(args.output, consolidated=True)
     print(f"Time: {ds.time.values[0]} .. {ds.time.values[-1]}")

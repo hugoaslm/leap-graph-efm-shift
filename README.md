@@ -10,7 +10,9 @@ warmer test years.
 ## Quick Start (Google Colab)
 
 1. Open `notebooks/graph_efm_temporal_shift_colab.ipynb` in Colab
-2. Edit Cell 1: set `GITHUB_REPO` to this repo's URL, choose `RUN_PROFILE`
+2. In Cell 1, `GITHUB_REPO` is pre-filled with
+   `https://github.com/hugoaslm/leap-graph-efm-shift.git` — just choose
+   `RUN_PROFILE` if the default `l4_core` doesn't match your runtime
 3. Run all cells
 
 The notebook clones this repo and neural-lam from GitHub. Data, checkpoints,

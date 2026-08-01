@@ -46,8 +46,9 @@ splits:
 sampling:
   step_length: 6                  # hours per timestep
   train_init: all                 # use all timesteps for training
-  eval_init: 00_12_utc            # only 00/12 UTC for val/test
-  eval_dates_per_month: 2         # distinct dates per month, each sampled at 00Z and 12Z
+  eval_init: native               # init hours come from the dataset's split scheme
+                                  # (00/12 UTC if the split starts at 06Z, else 06/18 UTC)
+  eval_dates_per_month: 2         # distinct dates per month, each at every dataset init hour
                                   # → 4 init times/month; val/id (5yr): 240, ood (7yr): 336
                                   # Increase to 4-5 if compute budget allows
 
