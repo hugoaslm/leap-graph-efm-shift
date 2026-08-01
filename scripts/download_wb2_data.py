@@ -66,8 +66,9 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     bytes_per_time = 0
     for var in ds.data_vars:
         nbytes_per_elem = ds[var].dtype.itemsize
-        per_time = int(np.prod(ds[var].sizes[k] for k in ds[var].dims
-                               if k != "time"))
+        per_time = int(np.prod(
+            [ds[var].sizes[k] for k in ds[var].dims if k != "time"]
+        ))
         bytes_per_time += nbytes_per_elem * per_time
     est_gb = bytes_per_time * n_time / 1e9
 
