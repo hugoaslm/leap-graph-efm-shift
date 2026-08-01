@@ -58,7 +58,7 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     for var in ds.data_vars:
         shape = ds[var].shape
         if len(shape) >= 3:
-            encoding[var] = {"chunks": (1,) + tuple(-1 for _ in shape[1:])}
+            encoding[var] = {"chunks": (512,) + tuple(-1 for _ in shape[1:])}
 
     bytes_per_time = 0
     for var in ds.data_vars:

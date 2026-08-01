@@ -39,6 +39,18 @@ def retire_invalid_store(path, cfg):
         os.rename(path, backup)
 
 
+def needs_rechunk(path):
+    try:
+        with xr.open_zarr(path) as ds:
+            da = ds.get("temperature")
+            if da is None or not da.chunks:
+                return False
+            t_chunks = da.chunks[0]
+            return len(set(t_chunks)) == 1 and t_chunks[0] == 1
+    except Exception:
+        return False
+
+
 def copy_path(src, dst):
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if os.path.isdir(src):
@@ -140,6 +152,26 @@ def main():
         raise RuntimeError(f"neural-lam cannot read fields store: "
                            f"{nl_fields_zarr}")
 
+    if needs_rechunk(fields_zarr):
+        print("Rechunking fields.zarr to time:512 (one-time, ~5-10 min)...")
+        t0 = time.time()
+        tmp = fields_zarr + ".rechunk"
+        with xr.open_zarr(fields_zarr) as ds:
+            ds = ds.chunk({"time": 512})
+            enc = {}
+            for v in ds.data_vars:
+                if "time" in ds[v].dims:
+                    enc[v] = {"chunks": (512,) + (-1,) * (ds[v].ndim - 1)}
+                else:
+                    enc[v] = {"chunks": ds[v].shape}
+            ds.to_zarr(tmp, mode="w", encoding=enc)
+        shutil.rmtree(fields_zarr)
+        os.rename(tmp, fields_zarr)
+        print(f"Copying rechunked fields to Drive: {drive_fields_zarr}")
+        shutil.rmtree(drive_fields_zarr)
+        shutil.copytree(fields_zarr, drive_fields_zarr)
+        print(f"Rechunk complete ({time.time() - t0:.0f}s).")
+
     graph_name = cfg["graph"]["name"]
     local_graph = os.path.join(args.nl, "graphs", graph_name)
     drive_graph = os.path.join(args.drive, "graphs", graph_name)
@@ -155,11 +187,13 @@ def main():
     prep_script = os.path.join(args.repo, "scripts",
                                "prepare_wb2_subset.py")
     for step in ["forcing", "grid_features", "mesh", "parameter_weights"]:
+        t0 = time.time()
         print(f"Running preprocessing step: {step}")
         subprocess.run(
             [sys.executable, "-u", prep_script,
              "--config", config_path, "--steps", step],
             cwd=args.nl, check=True)
+        print(f"[{step} took {time.time() - t0:.0f}s]")
         if step == "forcing":
             persist_output(os.path.join(nl_data, "forcing.zarr"),
                            os.path.join(local_data, "forcing.zarr"),

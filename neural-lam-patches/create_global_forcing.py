@@ -147,7 +147,7 @@ def main():
     xa_da = (
         xa_ds.to_dataarray("forcing_var")
         .transpose("time", "longitude", "latitude", "forcing_var")
-        .chunk({"time": 1, "longitude": -1, "latitude": -1, "forcing_var": -1})
+        .chunk({"time": 512, "longitude": -1, "latitude": -1, "forcing_var": -1})
     )
     xa_da.to_zarr(forcing_path, mode="w")
     print("Done!")
