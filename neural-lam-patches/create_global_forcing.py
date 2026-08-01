@@ -92,12 +92,17 @@ def main():
     forcing_fields_dict = {}
 
     # TOA radiation
-    print("Generating TOA radiation", flush=True)
+    print(
+        "Generating TOA radiation (jitted, 60 integration bins; ~1 min)",
+        flush=True,
+    )
     t0 = time.time()
     toa_array = gc_sr.get_toa_incident_solar_radiation(
         timestamps,
         grid_lat_vals,
         grid_lon_vals,
+        num_integration_bins=60,
+        use_jit=True,
     )  # (num_time, num_lat, num_lon)
     # Normalize to [0,1]
     toa_min = toa_array.min()
