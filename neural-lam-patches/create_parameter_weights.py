@@ -125,15 +125,13 @@ def main():
         # Compute mean state per calendar month from training years only.
         print("Computing monthly climatology...")
         fields_xds = xa.open_zarr(fields_group_path)
-        # Slice to training period
         if cfg is not None:
             train_start, train_end = cfg["splits"]["train"]
             fields_xds = fields_xds.sel(
                 time=slice(train_start, train_end)
             )
-        monthly_clim = fields_xds.groupby("time.month").mean(
-            dim="time"
-        ).compute()
+        fields_xds = fields_xds.load()
+        monthly_clim = fields_xds.groupby("time.month").mean(dim="time")
         # Save as numpy for easy reload
         clim_dict = {}
         for var_name in monthly_clim.data_vars:

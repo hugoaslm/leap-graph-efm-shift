@@ -64,7 +64,7 @@ def step_parameter_weights(cfg, config_path):
     if _exists(*[os.path.join(static_dir, f) for f in needed]):
         return
     _run("create_parameter_weights.py", "--dataset", dataset,
-         "--config", config_path, "--global_dataset", "1", "--batch_size", "8")
+         "--config", config_path, "--global_dataset", "1", "--batch_size", "32")
 
 
 STEP_REGISTRY = {
