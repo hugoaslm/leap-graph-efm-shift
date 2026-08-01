@@ -5,7 +5,6 @@ import yaml
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "neural-lam-prob-model"))
 if not os.path.isdir(REPO_ROOT):
-    # Fallback: when run from a notebook that cd'd into neural-lam
     REPO_ROOT = os.getcwd()
 
 
@@ -24,7 +23,6 @@ def step_download(cfg):
     fields_path = cfg["dataset"]["fields_zarr"]
     if _exists(fields_path):
         return
-    print("fields.zarr not found. Run scripts/download_wb2_data.py first.")
     raise RuntimeError("fields.zarr missing")
 
 

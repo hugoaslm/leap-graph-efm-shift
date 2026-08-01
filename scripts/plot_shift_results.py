@@ -35,7 +35,6 @@ def _load_json(path):
 
 
 def _metric_vals(rows, split, calib, var, metric):
-    """Return {lead_hours: mean} for a given slice."""
     result = {}
     for r in rows:
         if (r["split"] == split and r["calibration"] == calib
@@ -45,7 +44,6 @@ def _metric_vals(rows, split, calib, var, metric):
 
 
 def _bootstrap_ci(bs_rows, calib, metric, var):
-    """Return {lead_hours: (estimate, lo, hi)}."""
     key = f"{calib}_{metric}"
     result = {}
     for r in bs_rows:
@@ -56,12 +54,7 @@ def _bootstrap_ci(bs_rows, calib, metric, var):
     return result
 
 
-# ---------------------------------------------------------------------------
-# Figure 1: Split timeline + t2m anomalies
-# ---------------------------------------------------------------------------
-
 def fig1_splits_anomalies(cfg: dict, anomalies: dict, out_dir: str):
-    """Timeline bar of splits + t2m anomaly overlaid scatter."""
     fig, (ax1, ax2) = plt.subplots(
         2, 1, figsize=(10, 5), gridspec_kw={"height_ratios": [1, 3]},
     )
@@ -72,7 +65,6 @@ def fig1_splits_anomalies(cfg: dict, anomalies: dict, out_dir: str):
         "id": "#ff7f00", "ood": "#e41a1c",
     }
 
-    # Top: horizontal bars
     y_positions = {"train": 3, "val": 2, "id": 1, "ood": 0}
     for name, (start, end) in splits.items():
         sy = int(start[:4])
@@ -87,9 +79,6 @@ def fig1_splits_anomalies(cfg: dict, anomalies: dict, out_dir: str):
     ax1.legend(loc="upper right", ncol=4, fontsize=8)
     ax1.set_title("Data splits")
 
-    # Bottom: t2m anomalies
-    # Anomalies dict has mean/std per split, but not per-year values.
-    # We show the aggregate as a bar.
     split_order = ["val", "id", "ood"]
     means = [anomalies.get(s, {}).get("mean", 0) for s in split_order]
     stds = [anomalies.get(s, {}).get("std", 0) for s in split_order]
@@ -114,13 +103,8 @@ def fig1_splits_anomalies(cfg: dict, anomalies: dict, out_dir: str):
     print(f"  Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Figure 2: RMSE vs lead time
-# ---------------------------------------------------------------------------
-
 def fig2_rmse(rows: list[dict], pers_rows: list[dict],
               bs_rows: list[dict], cfg: dict, out_dir: str):
-    """Ensemble-mean RMSE vs lead time, ID vs OOD + persistence."""
     var_names = [sv["short_name"] for sv in cfg["state_variables"]]
     fig, axes = plt.subplots(
         1, len(var_names), figsize=(5 * len(var_names), 4), squeeze=False,
@@ -129,10 +113,8 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
     for vi, vname in enumerate(var_names):
         ax = axes[0, vi]
 
-        # ID raw
         id_vals = _metric_vals(rows, "id", "raw", vname, "rmse")
         ood_vals = _metric_vals(rows, "ood", "raw", vname, "rmse")
-        # Persistence
         pers_id = {}
         pers_ood = {}
         for r in pers_rows:
@@ -151,7 +133,6 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
                 color=COLORS["raw_ood"], linestyle=LINE_STYLES["raw_ood"],
                 marker="s", label="OOD (raw)")
 
-        # Persistence (average ID/OOD or plot both)
         if pers_id:
             p_leads = sorted(pers_id.keys())
             ax.plot(p_leads, [pers_id[l] for l in p_leads],
@@ -159,7 +140,6 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
                     linestyle=LINE_STYLES["persistence"],
                     marker="x", label="Persistence")
 
-        # Bootstrap CI bands
         ci = _bootstrap_ci(bs_rows, "raw", "rmse", vname)
         if ci:
             ci_leads = sorted(ci.keys())
@@ -186,13 +166,8 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
     print(f"  Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Figure 3: CRPS vs lead time (raw vs calibrated)
-# ---------------------------------------------------------------------------
-
 def fig3_crps(rows: list[dict], bs_rows: list[dict],
               cfg: dict, out_dir: str):
-    """Raw vs calibrated CRPS, ID vs OOD."""
     var_names = [sv["short_name"] for sv in cfg["state_variables"]]
     fig, axes = plt.subplots(
         1, len(var_names), figsize=(5 * len(var_names), 4), squeeze=False,
@@ -228,19 +203,13 @@ def fig3_crps(rows: list[dict], bs_rows: list[dict],
     print(f"  Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Figure 4: Spread-skill ratio + interval coverage
-# ---------------------------------------------------------------------------
-
 def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
-    """Calibrated spread-skill ratio (target=1) and coverage (target=P)."""
     var_names = [sv["short_name"] for sv in cfg["state_variables"]]
     fig, axes = plt.subplots(
         2, len(var_names), figsize=(5 * len(var_names), 7), squeeze=False,
     )
 
     for vi, vname in enumerate(var_names):
-        # Top: spread-skill ratio
         ax_ss = axes[0, vi]
         for split, key in [("id", "raw_id"), ("ood", "raw_ood")]:
             vals = _metric_vals(
@@ -258,7 +227,6 @@ def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
         ax_ss.legend(fontsize=7)
         ax_ss.grid(True, alpha=0.3)
 
-        # Bottom: interval coverage
         ax_cov = axes[1, vi]
         for pct_label, pct_val in [("50", 0.5), ("80", 0.8), ("90", 0.9)]:
             id_vals = _metric_vals(
@@ -302,12 +270,7 @@ def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
     print(f"  Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Figure 5: Rank histograms at 72h
-# ---------------------------------------------------------------------------
-
 def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
-    """Calibrated t2m rank histograms at 72h, ID vs OOD."""
     var_names = [sv["short_name"] for sv in cfg["state_variables"]]
     lead_72 = 72
 
@@ -345,7 +308,6 @@ def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
             ax.bar(x + width/2, ood_bins, width, color=COLORS["raw_ood"],
                    alpha=0.7, label="OOD")
 
-        # Flat reference
         ax.axhline(1.0 / n_bins, color="black", linewidth=0.5,
                    linestyle="--", label="Uniform")
 
@@ -362,26 +324,13 @@ def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
     print(f"  Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     parser = ArgumentParser(
         description="Plot results for Graph-EFM temporal-shift experiment"
     )
-    parser.add_argument(
-        "--config", type=str, required=True,
-        help="Path to experiment YAML config",
-    )
-    parser.add_argument(
-        "--metrics", type=str, default="results",
-        help="Directory containing evaluation CSV/JSON files",
-    )
-    parser.add_argument(
-        "--output", type=str, default="figures",
-        help="Output directory for figures",
-    )
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--metrics", type=str, default="results")
+    parser.add_argument("--output", type=str, default="figures")
     args = parser.parse_args()
 
     with open(args.config, "r") as fh:
@@ -389,7 +338,6 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
-    # Load data
     rows = _load_csv(os.path.join(args.metrics, "metrics.csv"))
     bs_rows = _load_csv(os.path.join(args.metrics, "bootstrap_ci.csv"))
     pers_rows = _load_csv(os.path.join(args.metrics, "persistence_rmse.csv"))

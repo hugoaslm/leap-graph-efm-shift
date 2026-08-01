@@ -4,8 +4,6 @@ from argparse import ArgumentParser
 import yaml
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "neural-lam-prob-model"))
-# Checkpoints live next to the neural-lam clone (e.g. <workspace>/checkpoints),
-# matching the paths the Colab notebook expects.
 CHECKPOINT_DIR = os.path.abspath(os.path.join(REPO_ROOT, "..", "checkpoints"))
 
 
@@ -57,7 +55,7 @@ def build_train_args(cfg, phase, config_path, resume_ckpt=None):
         "--ensemble_size", str(eval_cfg["ensemble_size"]),
         "--n_workers", str(eval_cfg.get("n_workers", 4)),
         "--seed", str(eval_cfg["seed"]),
-        "--sanity_batches", "0",    # skip sanity check to save time
+        "--sanity_batches", "0",
     ]
 
     if resume_ckpt is not None:
@@ -123,44 +121,16 @@ def find_best_checkpoint():
     return None
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     parser = ArgumentParser(
         description="Two-phase Graph-EFM training for temporal-shift experiment"
     )
-    parser.add_argument(
-        "--config",
-        type=str,
-        required=True,
-        help="Path to experiment YAML config",
-    )
-    parser.add_argument(
-        "--phase",
-        type=str,
-        required=True,
-        choices=["a", "b"],
-        help="Training phase: 'a' (ar_steps=1) or 'b' (ar_steps=4)",
-    )
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        help="Path to checkpoint to resume from (required for phase b)",
-    )
-    parser.add_argument(
-        "--max_minutes",
-        type=int,
-        default=120,
-        help="Maximum wall-clock time for this phase (default: 120)",
-    )
-    parser.add_argument(
-        "--dry_run",
-        action="store_true",
-        help="Print the command without executing",
-    )
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--phase", type=str, required=True,
+                        choices=["a", "b"])
+    parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--max_minutes", type=int, default=120)
+    parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
 
     config_path = resolve_path(args.config)

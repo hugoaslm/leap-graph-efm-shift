@@ -4,7 +4,6 @@ from argparse import ArgumentParser
 import numpy as np
 import xarray as xr
 
-# State variables + static fields needed for grid features.
 REQUIRED_VARS = [
     "geopotential", "temperature", "2m_temperature",
     "geopotential_at_surface", "land_sea_mask",
@@ -14,7 +13,6 @@ WB2_64x32_SOURCE = "gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_eq
 
 
 def download_with_gsutil(source, dest):
-    print(f"Copying {source} -> {dest}")
     subprocess.run(["gsutil", "-m", "cp", "-r", source, dest], check=True)
 
 
@@ -25,19 +23,17 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
             from google.colab import auth
             auth.authenticate_user()
         except Exception as exc:
-            print(f"Google auth failed ({exc}); falling back to anonymous "
-                  "access (bucket is public).")
+            print(f"Google auth failed ({exc}); using anonymous access.")
 
-    # Try anonymous access first; fall back to default credentials
     for token in ["anon", None]:
         try:
             ds = xr.open_zarr(source, consolidated=True,
                               storage_options={"token": token})
             break
-        except Exception as e:
+        except Exception:
             if token is None:
                 raise
-            print(f"Anonymous access failed, trying default credentials...")
+            print("Anonymous access failed, trying default credentials...")
     missing = set(REQUIRED_VARS) - set(ds.data_vars)
     if missing:
         raise RuntimeError(
@@ -50,7 +46,6 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     if time_start is not None or time_end is not None:
         ds = ds.sel(time=slice(time_start, time_end))
 
-    # Neural-LAM flattens arrays with longitude before latitude.
     ds = ds.transpose(
         "time", "longitude", "latitude", "level", missing_dims="ignore"
     )
@@ -59,14 +54,12 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     if n_time == 0:
         raise RuntimeError(f"Empty time selection ({time_start}..{time_end})")
 
-    # One chunk per timestep -> memory-safe incremental appends.
     encoding = {}
     for var in ds.data_vars:
         shape = ds[var].shape
         if len(shape) >= 3:
             encoding[var] = {"chunks": (1,) + tuple(-1 for _ in shape[1:])}
 
-    # Estimate final on-disk size (only the selected subset is written).
     bytes_per_time = 0
     for var in ds.data_vars:
         nbytes_per_elem = ds[var].dtype.itemsize
@@ -83,15 +76,10 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     if est_gb > 0.85 * free_gb:
         raise RuntimeError(
             f"Estimated download ({est_gb:.1f} GB) exceeds 85% of free disk "
-            f"({free_gb:.1f} GB). Free up space or shorten the time range."
+            f"({free_gb:.1f} GB)."
         )
 
-    # Write in small time slices so dask never materializes the whole range
-    # at once (avoids memory spikes / disk spills on Colab).
-    slice_len = max(1, int(slice_years * 4 * 365))  # 6-hourly: 4 steps/day
-
-    # Resume: skip timesteps already written by a previous (possibly
-    # interrupted) run, provided the existing store matches our selection.
+    slice_len = max(1, int(slice_years * 4 * 365))
     start = 0
     first = True
     if os.path.isdir(dest):
@@ -112,7 +100,7 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
                         print(f"Resuming: {n_prev}/{n_time} timesteps already "
                               "present.", flush=True)
         except Exception:
-            pass  # unreadable/partial store -> restart fresh
+            pass
 
     for t0 in range(start, n_time, slice_len):
         t1 = min(n_time, t0 + slice_len)
@@ -133,11 +121,8 @@ def main():
     parser.add_argument("--time_start", default="1979-01-01")
     parser.add_argument("--time_end", default="2022-12-31")
     parser.add_argument("--method", default="xarray", choices=["xarray", "gsutil"])
-    parser.add_argument("--slice_years", type=int, default=2,
-                        help="Download/write in slices of this many years each "
-                        "(keeps peak memory and disk low on Colab)")
-    parser.add_argument("--colab_auth", action="store_true",
-                        help="Authenticate with Google before accessing GCS")
+    parser.add_argument("--slice_years", type=int, default=2)
+    parser.add_argument("--colab_auth", action="store_true")
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)

@@ -1,23 +1,12 @@
-# Graph-EFM Temporal Shift Experiment — Reduced WeatherBench 2 64×32
-# =============================================================================
-# Pilot study: probabilistic calibration transfer under temporal distribution
-# shift, using a small 3-variable Graph-EFM model on WB2 ERA5 64×32 data.
-
-# ---- Dataset -----------------------------------------------------------------
 dataset:
   name: wb2_era5_64x32
-  source_path: data/wb2_era5_64x32          # relative to neural-lam-prob-model/
   fields_zarr: data/wb2_era5_64x32/fields.zarr
   forcing_zarr: data/wb2_era5_64x32/forcing.zarr
   static_dir: data/wb2_era5_64x32/static
 
-# ---- Grid --------------------------------------------------------------------
 grid:
-  shape: [64, 32]     # [lon, lat]
+  shape: [64, 32]
 
-# ---- State variables (ordered — determines GRID_STATE_DIM) -------------------
-# Each entry: name (ERA5 short name), level (hPa, null for surface),
-# short_name (for plots/tables).
 state_variables:
   - name: geopotential
     level: 500
@@ -29,50 +18,37 @@ state_variables:
     level: null
     short_name: t2m
 
-# ---- Forcing features (unchanged from paper) ---------------------------------
 forcing:
-  num_features: 5           # TOA, sin_year, cos_year, sin_day, cos_day
-  window: 3                 # stack 3 consecutive timesteps
-  dim: 15                   # 5 × 3
+  num_features: 5
+  window: 3
 
-# ---- Temporal splits ---------------------------------------------------------
 splits:
   train: ["1979-01-01", "2005-12-31"]
-  val:   ["2006-01-01", "2010-12-31"]
-  id:    ["2011-01-01", "2015-12-31"]    # in-distribution test
-  ood:   ["2016-01-01", "2022-12-31"]    # out-of-distribution (later years)
+  val: ["2006-01-01", "2010-12-31"]
+  id: ["2011-01-01", "2015-12-31"]
+  ood: ["2016-01-01", "2022-12-31"]
 
-# ---- Sampling ----------------------------------------------------------------
 sampling:
-  step_length: 6                  # hours per timestep
-  train_init: all                 # use all timesteps for training
-  eval_init: native               # init hours come from the dataset's split scheme
-                                  # (00/12 UTC if the split starts at 06Z, else 06/18 UTC)
-  eval_dates_per_month: 2         # distinct dates per month, each at every dataset init hour
-                                  # → 4 init times/month; val/id (5yr): 240, ood (7yr): 336
-                                  # Increase to 4-5 if compute budget allows
+  step_length: 6
+  eval_dates_per_month: 2
 
-# ---- Forecast horizons (in autoregressive steps) -----------------------------
 forecast:
   ar_steps_train_phase_a: 1
   ar_steps_train_phase_b: 4
-  eval_leads: 12                  # max 72 h
-  horizons_hours: [6, 24, 72]     # steps 1, 4, 12
+  eval_leads: 12
 
-# ---- Graph -------------------------------------------------------------------
 graph:
   name: global_hierarchical_64x32
   splits: 3
   levels: 3
   hierarchical: true
 
-# ---- Model -------------------------------------------------------------------
 model:
   name: graph_efm
   hidden_dim: 64
   latent_dim: 32
   hidden_layers: 1
-  decoder_processor_layers: 2     # "processor_layers" in args
+  decoder_processor_layers: 2
   encoder_processor_layers: 1
   prior_processor_layers: 1
   kl_beta: 1.0
@@ -84,7 +60,6 @@ model:
   learn_prior: true
   precision: bf16-mixed
 
-# ---- Training ----------------------------------------------------------------
 training:
   phase_a:
     batch_size: 8
@@ -95,22 +70,11 @@ training:
     epochs: 50
     lr: 5.0e-4
 
-# ---- Evaluation --------------------------------------------------------------
 evaluation:
   ensemble_size: 8
   seed: 42
   bootstrap_resamples: 1000
   n_workers: 4
 
-# ---- Calibration -------------------------------------------------------------
 calibration:
-  method: spread_scaling
   search_grid: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 5.0]
-  criterion: lat_weighted_crps
-
-# ---- Colab paths (overridden at runtime) -------------------------------------
-colab:
-  drive_root: /content/drive/MyDrive/leap_project
-  run_profile: l4_core
-  max_compute_units: 50
-  reserved_units: 10
