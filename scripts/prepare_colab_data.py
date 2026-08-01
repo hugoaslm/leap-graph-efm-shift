@@ -59,6 +59,22 @@ def copy_path(src, dst):
         shutil.copy2(src, dst)
 
 
+def atomic_copytree(src, dst):
+    tmp = f"{dst}.tmp"
+    if os.path.islink(tmp) or os.path.exists(tmp):
+        if os.path.isdir(tmp) and not os.path.islink(tmp):
+            shutil.rmtree(tmp)
+        else:
+            os.remove(tmp)
+    shutil.copytree(src, tmp)
+    if os.path.islink(dst) or os.path.exists(dst):
+        if os.path.isdir(dst) and not os.path.islink(dst):
+            shutil.rmtree(dst)
+        else:
+            os.remove(dst)
+    os.rename(tmp, dst)
+
+
 def restore_from_drive(local_path, drive_path, nl_path=None):
     if not os.path.exists(local_path) and os.path.exists(drive_path):
         print(f"Copying from Drive: {drive_path}")
@@ -143,8 +159,7 @@ def main():
                 raise RuntimeError(
                     f"WB2 download script failed (exit {proc.returncode}).")
             os.makedirs(drive_data, exist_ok=True)
-            shutil.copytree(fields_zarr, drive_fields_zarr,
-                            dirs_exist_ok=True)
+            atomic_copytree(fields_zarr, drive_fields_zarr)
     else:
         print("Data already on local disk.")
     report("fields.zarr (download/copy)")
@@ -174,8 +189,7 @@ def main():
         shutil.rmtree(fields_zarr)
         os.rename(tmp, fields_zarr)
         print(f"Copying rechunked fields to Drive: {drive_fields_zarr}")
-        shutil.rmtree(drive_fields_zarr)
-        shutil.copytree(fields_zarr, drive_fields_zarr)
+        atomic_copytree(fields_zarr, drive_fields_zarr)
         print(f"Rechunk complete ({time.time() - t0:.0f}s).")
     report("fields.zarr (rechunk/validate)")
 
