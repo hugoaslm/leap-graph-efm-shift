@@ -4,6 +4,15 @@ from argparse import ArgumentParser
 import xarray as xr
 import yaml
 
+try:
+    from dask.diagnostics import ProgressBar
+except ImportError:
+    class ProgressBar:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+
 REQUIRED_VARS = [
     "geopotential", "temperature", "2m_temperature",
     "geopotential_at_surface", "land_sea_mask",
@@ -158,11 +167,9 @@ def main():
                 sys.stderr.flush()
                 raise RuntimeError(
                     f"WB2 download script failed (exit {proc.returncode}).")
-            os.makedirs(drive_data, exist_ok=True)
-            atomic_copytree(fields_zarr, drive_fields_zarr)
     else:
         print("Data already on local disk.")
-    report("fields.zarr (download/copy)")
+    report("fields.zarr (download)")
 
     if not valid_fields_store(fields_zarr, cfg):
         raise RuntimeError(f"Downloaded fields store failed validation: "
@@ -177,6 +184,11 @@ def main():
         print("Rechunking fields.zarr to time:512 (one-time, ~5-10 min)...")
         t0 = time.time()
         tmp = fields_zarr + ".rechunk"
+        if os.path.lexists(tmp):
+            if os.path.isdir(tmp) and not os.path.islink(tmp):
+                shutil.rmtree(tmp)
+            else:
+                os.remove(tmp)
         with xr.open_zarr(fields_zarr) as ds:
             ds = ds.chunk({"time": 512})
             enc = {}
@@ -185,13 +197,28 @@ def main():
                     enc[v] = {"chunks": (512,) + (-1,) * (ds[v].ndim - 1)}
                 else:
                     enc[v] = {"chunks": ds[v].shape}
-            ds.to_zarr(tmp, mode="w", encoding=enc)
+            with ProgressBar(minimum=5, dt=2):
+                ds.to_zarr(tmp, mode="w", encoding=enc)
         shutil.rmtree(fields_zarr)
         os.rename(tmp, fields_zarr)
-        print(f"Copying rechunked fields to Drive: {drive_fields_zarr}")
-        atomic_copytree(fields_zarr, drive_fields_zarr)
         print(f"Rechunk complete ({time.time() - t0:.0f}s).")
     report("fields.zarr (rechunk/validate)")
+
+    drive_missing = not valid_fields_store(drive_fields_zarr, cfg)
+    if not drive_missing and needs_rechunk(drive_fields_zarr):
+        print("Drive fields cache is still time:1-chunked; upgrading...")
+        drive_missing = True
+    if drive_missing:
+        size = 0
+        for root, _, files in os.walk(fields_zarr):
+            for f in files:
+                size += os.path.getsize(os.path.join(root, f))
+        print(f"Copying rechunked fields.zarr to Drive "
+              f"({size / 1e9:.1f} GB, ~500 files; can take a few minutes)...")
+        atomic_copytree(fields_zarr, drive_fields_zarr)
+        print("Drive fields cache updated.")
+    else:
+        print("Drive fields cache up to date.")
 
     graph_name = cfg["graph"]["name"]
     local_graph = os.path.join(args.nl, "graphs", graph_name)
