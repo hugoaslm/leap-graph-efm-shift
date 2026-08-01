@@ -10,10 +10,10 @@ on an early validation period and tested on later, warmer years.
 
 - `configs/` — experiment configuration (grid, variables, splits, hyperparameters)
 - `scripts/` — data download, preprocessing, training, evaluation, plotting
-- `notebooks/` — end-to-end Colab pipeline
+- `notebooks/` — Colab pipeline
 - `neural-lam-patches/` — runtime overlay applied on top of neural-lam (branch `prob_model_global`)
 
-## Reproduce (Colab)
+## Running on Colab
 
 1. Open `notebooks/graph_efm_temporal_shift_colab.ipynb` in Colab.
 2. Run all cells.
