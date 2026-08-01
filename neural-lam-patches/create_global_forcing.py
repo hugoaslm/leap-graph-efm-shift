@@ -1,5 +1,6 @@
 # Standard library
 import os
+import time
 from argparse import ArgumentParser
 from collections import OrderedDict
 
@@ -91,7 +92,8 @@ def main():
     forcing_fields_dict = {}
 
     # TOA radiation
-    print("Generating TOA radiation")
+    print("Generating TOA radiation", flush=True)
+    t0 = time.time()
     toa_array = gc_sr.get_toa_incident_solar_radiation(
         timestamps,
         grid_lat_vals,
@@ -102,9 +104,11 @@ def main():
     toa_max = toa_array.max()
     toa_array = (toa_array - toa_min) / (toa_max - toa_min)
     forcing_fields_dict["toa_incident_radiation"] = toa_array.transpose(0, 2, 1)
+    print(f"  TOA radiation done in {time.time() - t0:.0f}s", flush=True)
 
     # Year progress
-    print("Generating day + year progress features")
+    print("Generating day + year progress features", flush=True)
+    t0 = time.time()
     year_progress = gc_du.get_year_progress(seconds_since_epoch)
     # (num_time,)
     year_prog_sin, year_prog_cos = progress_to_sin_cos(year_progress)
@@ -127,6 +131,7 @@ def main():
     forcing_fields_dict["cos_day_progress"] = np.broadcast_to(
         day_prog_cos[:, :, np.newaxis], forcing_field_shape
     )
+    print(f"  progress features done in {time.time() - t0:.0f}s", flush=True)
 
     # Sort forcing fields dict to have consistent ordering
     # This is also neccesary to retain compatibility with existing checkpoints
@@ -149,7 +154,15 @@ def main():
         .transpose("time", "longitude", "latitude", "forcing_var")
         .chunk({"time": 512, "longitude": -1, "latitude": -1, "forcing_var": -1})
     )
-    xa_da.to_zarr(forcing_path, mode="w")
+    print("Writing forcing.zarr...", flush=True)
+    t0 = time.time()
+    try:
+        from dask.diagnostics import ProgressBar
+        with ProgressBar():
+            xa_da.to_zarr(forcing_path, mode="w")
+    except ImportError:
+        xa_da.to_zarr(forcing_path, mode="w")
+    print(f"  wrote forcing.zarr in {time.time() - t0:.0f}s", flush=True)
     print("Done!")
 
     if args.plot:

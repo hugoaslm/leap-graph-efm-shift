@@ -1,4 +1,4 @@
-import os, shutil, subprocess, sys
+import os, shutil, subprocess, sys, time
 from argparse import ArgumentParser
 
 import numpy as np
@@ -82,6 +82,7 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
     slice_len = max(1, int(slice_years * 4 * 365))
     start = 0
     first = True
+    w_start = time.time()
     if os.path.isdir(dest):
         try:
             with xr.open_zarr(dest, consolidated=True) as prev:
@@ -110,7 +111,14 @@ def download_with_xarray(source, dest, time_start=None, time_end=None,
             first = False
         else:
             sub.to_zarr(dest, mode="a", append_dim="time", consolidated=True)
-        print(f"  wrote timesteps {t0 + 1}-{t1} of {n_time}", flush=True)
+        frac = (t1 - start) / (n_time - start)
+        eta = ""
+        if t0 > start and time.time() > w_start:
+            rate = (t0 - start) / (time.time() - w_start)
+            remaining_s = (n_time - t1) / rate if rate > 0 else 0
+            eta = f", ~{remaining_s / 60:.0f} min left"
+        print(f"  wrote timesteps {t0 + 1}-{t1} of {n_time} "
+              f"({frac:.0%}{eta})", flush=True)
     print(f"Saved {dest} (~{est_gb:.1f} GB)", flush=True)
 
 

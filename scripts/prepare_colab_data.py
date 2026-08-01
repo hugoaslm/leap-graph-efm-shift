@@ -101,6 +101,11 @@ def main():
     with open(args.config, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
 
+    t_start = time.time()
+
+    def report(phase):
+        print(f"  [{phase} done in {time.time() - t_start:.0f}s]")
+
     data_name = cfg["dataset"]["name"]
     drive_data = os.path.join(args.drive, "data", data_name)
     local_data = os.path.join(args.project, "data", data_name)
@@ -142,6 +147,7 @@ def main():
                             dirs_exist_ok=True)
     else:
         print("Data already on local disk.")
+    report("fields.zarr (download/copy)")
 
     if not valid_fields_store(fields_zarr, cfg):
         raise RuntimeError(f"Downloaded fields store failed validation: "
@@ -171,6 +177,7 @@ def main():
         shutil.rmtree(drive_fields_zarr)
         shutil.copytree(fields_zarr, drive_fields_zarr)
         print(f"Rechunk complete ({time.time() - t0:.0f}s).")
+    report("fields.zarr (rechunk/validate)")
 
     graph_name = cfg["graph"]["name"]
     local_graph = os.path.join(args.nl, "graphs", graph_name)
@@ -186,13 +193,17 @@ def main():
     config_path = os.path.abspath(args.config)
     prep_script = os.path.join(args.repo, "scripts",
                                "prepare_wb2_subset.py")
+    steps_pending = []
     for step in ["forcing", "grid_features", "mesh", "parameter_weights"]:
+        steps_pending.append(step)
         t0 = time.time()
-        print(f"Running preprocessing step: {step}")
+        print(f"Running preprocessing step: {step} "
+              f"(pending: {', '.join(steps_pending)})")
         subprocess.run(
             [sys.executable, "-u", prep_script,
              "--config", config_path, "--steps", step],
             cwd=args.nl, check=True)
+        steps_pending.remove(step)
         print(f"[{step} took {time.time() - t0:.0f}s]")
         if step == "forcing":
             persist_output(os.path.join(nl_data, "forcing.zarr"),
@@ -206,6 +217,8 @@ def main():
             if os.path.isdir(local_graph) and not os.path.exists(drive_graph):
                 print(f"Copying to Drive: {local_graph}")
                 copy_path(local_graph, drive_graph)
+
+    print(f"PREP FINISHED in {time.time() - t_start:.0f}s total.")
 
 
 if __name__ == "__main__":

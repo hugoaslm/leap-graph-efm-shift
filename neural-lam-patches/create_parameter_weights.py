@@ -1,5 +1,6 @@
 # Standard library
 import os
+import time
 from argparse import ArgumentParser
 
 # Third-party
@@ -142,15 +143,28 @@ def main():
     )
 
     if global_ds and cfg is not None:
+        try:
+            from dask.diagnostics import ProgressBar
+        except ImportError:
+            ProgressBar = None
         fields_group_path = os.path.join(
             "data", args.dataset, "fields.zarr"
         )
-        print("Computing monthly climatology...")
+        print("Loading training fields into memory...", flush=True)
+        t0 = time.time()
         fields_xds = xa.open_zarr(fields_group_path)
         train_start, train_end = cfg["splits"]["train"]
         fields_xds = fields_xds.sel(
             time=slice(train_start, train_end)
-        ).load()
+        )
+        if ProgressBar is not None:
+            with ProgressBar():
+                fields_xds = fields_xds.load()
+        else:
+            fields_xds = fields_xds.load()
+        print(f"Loaded in {time.time() - t0:.0f}s.", flush=True)
+        print("Computing monthly climatology...", flush=True)
+        t0 = time.time()
         monthly_clim = fields_xds.groupby("time.month").mean(dim="time")
         clim_dict = {}
         for var_name in monthly_clim.data_vars:
@@ -161,8 +175,10 @@ def main():
             os.path.join(static_dir_path, "monthly_climatology.npz"),
             **clim_dict,
         )
+        print(f"  climatology done in {time.time() - t0:.0f}s", flush=True)
 
-        print("Computing mean and std.-dev. for parameters...")
+        print("Computing mean and std.-dev. for parameters...", flush=True)
+        t0 = time.time()
         state_parts = []
         for sv in cfg["state_variables"]:
             da = fields_xds[sv["name"]]
@@ -185,8 +201,11 @@ def main():
             torch.tensor(std),
             os.path.join(static_dir_path, "parameter_std.pt"),
         )
+        print(f"  mean/std done in {time.time() - t0:.0f}s", flush=True)
 
-        print("Computing mean and std.-dev. for one-step differences...")
+        print("Computing mean and std.-dev. for one-step differences...",
+              flush=True)
+        t0 = time.time()
         standardized = (state - mean) / std
         diffs = standardized[2:] - standardized[1:-1]
         diff_mean = diffs.mean(axis=(0, 1))
@@ -202,6 +221,7 @@ def main():
             torch.tensor(diff_std),
             os.path.join(static_dir_path, "diff_std.pt"),
         )
+        print(f"  diff stats done in {time.time() - t0:.0f}s", flush=True)
     else:
 
         if global_ds:
