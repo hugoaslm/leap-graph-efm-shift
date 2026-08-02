@@ -174,6 +174,7 @@ def main():
     drive_archive = os.path.join(args.drive, "data", data_name + ".tar")
     graph_name = cfg["graph"]["name"]
     local_graph = os.path.join(args.nl, "graphs", graph_name)
+    project_graph = os.path.join(args.project, "graphs", graph_name)
     drive_graph = os.path.join(args.drive, "graphs", graph_name)
     local_tar = os.path.join(args.project, "data", data_name + ".tar")
 
@@ -296,6 +297,11 @@ def main():
             finalize_output(nl_forcing, local_forcing)
         elif step in ("grid_features", "parameter_weights"):
             finalize_output(nl_static, local_static)
+
+    if os.path.isdir(local_graph) and not os.path.lexists(project_graph):
+        os.makedirs(os.path.dirname(project_graph), exist_ok=True)
+        print(f"Linking graph into project dir: {project_graph}")
+        os.symlink(local_graph, project_graph)
 
     if not os.path.exists(drive_archive) or safety_uploaded:
         print("Building full data archive and uploading to Drive...")
