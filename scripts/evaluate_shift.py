@@ -415,6 +415,10 @@ def main():
 
     grid_weights = getattr(model, "grid_weights", None)
     mask = getattr(model, "interior_mask_bool", None)
+    if grid_weights is not None:
+        grid_weights = grid_weights.detach().cpu()
+    if mask is not None:
+        mask = mask.detach().cpu()
 
     splits = ["val", "id", "ood"]
     datasets = {}
