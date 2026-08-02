@@ -303,7 +303,7 @@ def main():
 
     cfg = constants.get_config()
     if cfg is not None:
-        valid_eval_splits = tuple(cfg["splits"].keys())
+        valid_eval_splits = (None,) + tuple(cfg["splits"].keys())
     else:
         valid_eval_splits = (None, "val", "test")
     assert args.eval in valid_eval_splits, (

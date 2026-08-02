@@ -50,12 +50,12 @@ def retire_invalid_store(path, cfg):
 
 def needs_rechunk(path):
     try:
-        with xr.open_zarr(path) as ds:
-            da = ds.get("temperature")
-            if da is None or not da.chunks:
-                return False
-            t_chunks = da.chunks[0]
-            return len(set(t_chunks)) == 1 and t_chunks[0] == 1
+        import zarr
+        g = zarr.open_group(path, mode="r")
+        arr = g.get("temperature")
+        if arr is not None:
+            return arr.chunks[0] == 1
+        return False
     except Exception:
         return False
 
