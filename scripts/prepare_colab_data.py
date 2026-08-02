@@ -68,6 +68,29 @@ def copy_path(src, dst):
         shutil.copy2(src, dst)
 
 
+def copy_tree_with_progress(src, dst, label):
+    total = sum(os.path.getsize(os.path.join(root, f))
+                for root, _, files in os.walk(src) for f in files)
+    done = 0
+    count = 0
+    t0 = time.time()
+    for root, _, files in os.walk(src):
+        target = os.path.join(dst, os.path.relpath(root, src))
+        os.makedirs(target, exist_ok=True)
+        for f in files:
+            s = os.path.join(root, f)
+            d = os.path.join(target, f)
+            sz = os.path.getsize(s)
+            shutil.copy2(s, d)
+            done += sz
+            count += 1
+            if count % 100 == 0 or done >= total:
+                print(f"  {label}: {done / 1e9:.2f}/{total / 1e9:.2f} GB "
+                      f"({done * 100 / max(total, 1):.0f}%), {count} files",
+                      flush=True)
+    print(f"  {label} copied in {time.time() - t0:.0f}s", flush=True)
+
+
 def ensure_symlink(local_path, nl_path):
     if os.path.lexists(nl_path):
         return
@@ -176,8 +199,10 @@ def main():
             print(f"  archive extracted in {time.time() - t0:.0f}s")
         elif valid_fields_store(drive_fields_zarr, cfg):
             restored_from = "legacy"
-            print("Copying legacy Drive cache (one-time migration)...")
-            shutil.copytree(drive_data, local_data, dirs_exist_ok=True)
+            print("Migrating fields.zarr from legacy Drive cache "
+                  "(one-time; forcing/static regenerate after)...")
+            copy_tree_with_progress(drive_fields_zarr, fields_zarr,
+                                    "legacy fields.zarr")
         else:
             restored_from = "download"
             print("Downloading WB2 data (~4 GB; public bucket, no auth)...")
