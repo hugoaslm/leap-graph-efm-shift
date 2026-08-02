@@ -151,7 +151,7 @@ def compute_all_metrics(
     lead_hours: list,
     mask: torch.Tensor | None = None,
 ) -> dict:
-    results = defaultdict(lambda: defaultdict(list))
+    results = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
 
     n_samples, n_ens, n_steps, n_grid, d_state = pred.shape
 

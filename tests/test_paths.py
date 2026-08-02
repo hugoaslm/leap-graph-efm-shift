@@ -1,10 +1,23 @@
 import os, tempfile
+from collections import defaultdict
 
 import yaml
 
 from common import REPO_DIR, SCRIPTS_DIR, CFG_PATH
 import _paths
 import prepare_wb2_subset
+
+
+def test_metrics_nested_dict_structure():
+    results = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    results["rmse"]["z500"][6] = 1.0
+    results["rmse"]["z500"][12] = 2.0
+    results["coverage"]["80"]["t2m"][6] = 0.8
+    assert results["rmse"]["z500"][6] == 1.0
+    assert results["rmse"]["z500"][12] == 2.0
+    assert results["coverage"]["80"]["t2m"][6] == 0.8
+    assert results["rmse"]["z500"].get(24) is None
+    assert results["coverage"]["80"]["t2m"].get(24) is None
 
 
 def test_find_neural_lam_sibling_layout():
