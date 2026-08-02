@@ -1,4 +1,5 @@
 # Standard library
+import argparse
 import random
 import time
 from argparse import ArgumentParser
@@ -7,6 +8,14 @@ from argparse import ArgumentParser
 import pytorch_lightning as pl
 import torch
 from lightning_fabric.utilities import seed
+
+# Checkpoints save hyperparameters as an argparse.Namespace, which PyTorch 2.6+
+# rejects under the default weights_only=True load. The checkpoints are created
+# by our own training runs, so allowlist the type.
+try:
+    torch.serialization.add_safe_globals([argparse.Namespace])
+except Exception:
+    pass
 
 # First-party
 from neural_lam import constants, utils

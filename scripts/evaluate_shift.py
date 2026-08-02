@@ -16,6 +16,14 @@ from _paths import find_neural_lam
 REPO_ROOT = find_neural_lam(__file__, os.getcwd())
 sys.path.insert(0, REPO_ROOT)
 
+# Checkpoints save hyperparameters as an argparse.Namespace, which PyTorch 2.6+
+# rejects under the default weights_only=True load.
+try:
+    import argparse
+    torch.serialization.add_safe_globals([argparse.Namespace])
+except Exception:
+    pass
+
 from neural_lam import constants, metrics as nl_metrics
 from neural_lam.era5_dataset import ERA5Dataset
 from neural_lam.models.graph_efm import GraphEFM

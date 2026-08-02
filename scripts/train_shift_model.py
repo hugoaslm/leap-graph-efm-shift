@@ -161,9 +161,14 @@ def main():
         return
 
     try:
-        run_with_timeout(cmd, args.max_minutes, cwd=REPO_ROOT)
+        ret = run_with_timeout(cmd, args.max_minutes, cwd=REPO_ROOT)
     except KeyboardInterrupt:
         print("Interrupted.")
+        sys.exit(1)
+
+    if ret.returncode not in (0, -1):
+        print(f"Training failed (exit code {ret.returncode}); "
+              "not copying a checkpoint.")
         sys.exit(1)
 
     best = find_best_checkpoint()
