@@ -20,6 +20,14 @@ VAR_LABELS = {"z500": "Z500", "t850": "T850", "t2m": "T2M"}
 VAR_UNITS = {"z500": "m²/s²", "t850": "K", "t2m": "K"}
 
 
+def save_fig(fig, out_dir, name, dpi=150):
+    for ext in ("png", "pdf"):
+        path = os.path.join(out_dir, f"{name}.{ext}")
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        print(f"  Saved {path}")
+    plt.close(fig)
+
+
 def _load_csv(path):
     if not os.path.exists(path):
         return []
@@ -97,10 +105,7 @@ def fig1_splits_anomalies(cfg: dict, anomalies: dict, out_dir: str):
     )
 
     fig.tight_layout()
-    path = os.path.join(out_dir, "01_splits_anomalies.pdf")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
+    save_fig(fig, out_dir, "01_splits_anomalies")
 
 
 def fig2_rmse(rows: list[dict], pers_rows: list[dict],
@@ -160,10 +165,7 @@ def fig2_rmse(rows: list[dict], pers_rows: list[dict],
 
     fig.suptitle("Ensemble-mean RMSE", fontsize=13)
     fig.tight_layout()
-    path = os.path.join(out_dir, "02_rmse_id_ood.pdf")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
+    save_fig(fig, out_dir, "02_rmse_id_ood")
 
 
 def fig3_crps(rows: list[dict], bs_rows: list[dict],
@@ -197,10 +199,7 @@ def fig3_crps(rows: list[dict], bs_rows: list[dict],
 
     fig.suptitle("CRPS: Raw vs Calibrated", fontsize=13)
     fig.tight_layout()
-    path = os.path.join(out_dir, "03_crps_calibration.pdf")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
+    save_fig(fig, out_dir, "03_crps_calibration")
 
 
 def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
@@ -264,10 +263,7 @@ def fig4_spread_coverage(rows: list[dict], cfg: dict, out_dir: str):
     fig.suptitle("Calibrated Ensemble: Spread-Skill & Coverage",
                  fontsize=13)
     fig.tight_layout()
-    path = os.path.join(out_dir, "04_spread_skill_coverage.pdf")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
+    save_fig(fig, out_dir, "04_spread_skill_coverage")
 
 
 def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
@@ -318,10 +314,7 @@ def fig5_rank_histograms(metrics_dir: str, cfg: dict, out_dir: str):
 
     fig.suptitle(f"Calibrated Rank Histograms at {lead_72}h", fontsize=13)
     fig.tight_layout()
-    path = os.path.join(out_dir, "05_rank_histograms.pdf")
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved {path}")
+    save_fig(fig, out_dir, "05_rank_histograms")
 
 
 def main():
