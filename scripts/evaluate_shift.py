@@ -10,7 +10,23 @@ import torch
 import yaml
 from tqdm import tqdm
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "neural-lam-prob-model"))
+
+def _find_neural_lam():
+    base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    cwd = os.getcwd()
+    candidates = [
+        os.path.join(base, "neural-lam-prob-model"),
+        os.path.join(cwd, "neural-lam-prob-model"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                     "neural-lam-prob-model"),
+    ]
+    for cand in candidates:
+        if os.path.isdir(os.path.join(cand, "neural_lam")):
+            return cand
+    return candidates[0]
+
+
+REPO_ROOT = _find_neural_lam()
 sys.path.insert(0, REPO_ROOT)
 
 from neural_lam import constants, metrics as nl_metrics
